@@ -63,6 +63,28 @@ init() {
   y2row 40; land_row=$row
   [ $land_row -gt $((ship_row - 1)) ] && land_row=$((ship_row - 1))
 
+  # Shields: four 22x16-pixel arches with a notch underneath, bases at Y=48,
+  # left edges at x=34, 79, 124, 169. At this scale, 6 columns x 2 rows:
+  #   ▟████▙
+  #   ██  ██
+  # Cells are listed as "row:col:kind" (L/R = rounded top corners).
+  y2row 48; shield_bot=$row
+  shield_top=$((shield_bot - 1))
+  shield_cells=""
+  for x in 34 79 124 169; do
+    sx=$((left + x / 4))
+    dc=0
+    while [ $dc -lt 6 ]; do
+      kind=B
+      [ $dc -eq 0 ] && kind=L
+      [ $dc -eq 5 ] && kind=R
+      shield_cells="$shield_cells $shield_top:$((sx + dc)):$kind"
+      [ $dc -lt 2 ] || [ $dc -gt 3 ] &&
+        shield_cells="$shield_cells $shield_bot:$((sx + dc)):B"
+      dc=$((dc + 1))
+    done
+  done
+
   # Arcade timings (60 Hz) converted to frames at this game's ~52 fps and to
   # rows at this playfield height (256 / field_h pixels per row).
   #   player shot:   4 px/frame (240 px/s)
@@ -115,7 +137,45 @@ init() {
 #   invaders: space-separated "row:col:sprite"
 #   bullets:  the player's shot, "row:col" (at most one, as in the arcade)
 #   bombs:    space-separated "row:col" invader shots (at most three)
+#   sh_ROW_COL: hit points left in each shield cell (2 full, 1 damaged,
+#             unset or 0 gone). POSIX sh has no arrays, hence one variable
+#             per cell, accessed with eval.
 # ---------------------------------------------------------------------------
+
+# Restores all shields to full strength (at the start of each wave).
+reset_shields() {
+  for s in $shield_cells; do
+    IFS=:
+    set -- $s
+    unset IFS
+    eval "sh_$1_$2=2"
+  done
+  shields_dirty=1
+}
+
+# Damages the shield cell at row $1, column $2. Returns 1 if there is no
+# shield there.
+hit_shield() {
+  [ $1 -lt $shield_top ] || [ $1 -gt $shield_bot ] && return 1
+  eval "hp=\${sh_$1_$2:-0}"
+  [ $hp -eq 0 ] && return 1
+  eval "sh_$1_$2=$((hp - 1))"
+  shields_dirty=1
+  return 0
+}
+
+# Shots that hit a shield damage it and are destroyed.
+check_shields() {
+  for b in $bullets; do
+    hit_shield ${b%:*} ${b#*:} && bullets=""
+  done
+  remaining=""
+  for m in $bombs; do
+    hit_shield ${m%:*} ${m#*:} && continue
+    remaining="$remaining $m"
+  done
+  bombs=$remaining
+}
 
 # Sets $rnd to a pseudo-random number in 0..$1-1 without a subprocess
 # (POSIX sh has no $RANDOM). Linear congruential generator.
@@ -159,6 +219,9 @@ spawn_wave() {
   fi
   y2row $y
   bottom=$row
+  # At low heights the arcade starts the formation just above the shields;
+  # rounding to rows can put it on them, so keep it one row clear.
+  [ $bottom -ge $shield_top ] && bottom=$((shield_top - 1))
 
   invaders=""
   r=0
@@ -177,6 +240,7 @@ spawn_wave() {
     r=$((r + 1))
   done
   inv_count=$((inv_rows * inv_cols))
+  reset_shields
   bullets=""
   bombs=""
   shot_tick=0
@@ -317,6 +381,11 @@ move_invaders() {
     ir=$(($1 + drop))
     ic=$(($2 + inv_dir))
     [ $ir -ge $land_row ] && landed=1
+    # Invaders passing through the shields erase them, as in the arcade
+    if [ $ir -ge $shield_top ] && [ $ir -le $shield_bot ]; then
+      eval "sh_${ir}_${ic}=0 sh_${ir}_$((ic + 1))=0"
+      shields_dirty=1
+    fi
     moved="$moved $ir:$ic:$3"
   done
   invaders=$moved
@@ -439,6 +508,32 @@ draw() {
     f="$f${ESC}[$ship_row;${ship_col}H◢ ◣"
   fi
 
+  # Shields (green, like the arcade's screen overlay) change only when hit,
+  # so they are re-rendered only then
+  if [ $shields_dirty -eq 1 ]; then
+    shield_frame="${ESC}[32m"
+    for s in $shield_cells; do
+      IFS=:
+      set -- $s
+      unset IFS
+      eval "hp=\${sh_$1_$2:-0}"
+      case $hp in
+        0) continue ;;
+        1) g='▒' ;;
+        *)
+          case $3 in
+            L) g='▟' ;;
+            R) g='▙' ;;
+            *) g='█' ;;
+          esac ;;
+      esac
+      shield_frame="$shield_frame${ESC}[$1;$2H$g"
+    done
+    shield_frame="$shield_frame${ESC}[0m"
+    shields_dirty=0
+  fi
+  f="$f$shield_frame"
+
   # The formation rarely changes between frames (at the start it steps every
   # ~2s), so only re-render it when it has.
   if [ "$invaders" != "${drawn_invaders-}" ]; then
@@ -497,6 +592,7 @@ main() {
       fi
 
       move_bullets
+      check_shields
       check_collisions
       if move_invaders; then
         # Re-check so bullets can't slip past invaders that just dropped
@@ -506,6 +602,7 @@ main() {
       if [ $game_over -eq 0 ]; then
         move_bombs
         drop_bomb
+        check_shields
         check_bombs
       fi
       if [ -z "$invaders" ]; then
