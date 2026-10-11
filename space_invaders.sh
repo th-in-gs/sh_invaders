@@ -93,7 +93,9 @@ lose_life() {
 read_input() {
   move=0
   fire=0
-  keys=$(dd bs=64 count=1 2>/dev/null) || keys=""
+  # Terminal is in min 0 time 0 mode, so read returns at once with whatever
+  # is pending (status 1, as it sees EOF). IFS= keeps spaces (fire key).
+  IFS= read -r keys
   while [ -n "$keys" ]; do
     rest=${keys#?}
     key=${keys%"$rest"}
@@ -252,7 +254,9 @@ main() {
     fi
 
     draw
-    sleep 0.02
+    # Aim for ~50 fps. Frame work is <1ms; the rest is the cost of starting
+    # sleep itself (~6-10ms on macOS), so the delay is set below 0.02.
+    sleep 0.012
   done
 
   cleanup
