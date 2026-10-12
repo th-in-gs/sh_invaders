@@ -198,8 +198,8 @@ reload_bombs() {
 # Points by invader type, as in the arcade (top row 30, middle 20, bottom 10)
 points() {
   case $1 in
-    👽) pts=30 ;;
-    👾) pts=20 ;;
+    👾) pts=30 ;;
+    🦀) pts=20 ;;
     *) pts=10 ;;
   esac
 }
@@ -227,9 +227,9 @@ spawn_wave() {
   r=0
   while [ $r -lt $inv_rows ]; do
     case $r in
-      0) sprite="👽" ;;
-      1|2) sprite="👾" ;;
-      *) sprite="👹" ;;
+      0) sprite="👾" ;;     # the arcade's "squid"
+      1|2) sprite="🦀" ;;   # "crab"
+      *) sprite="🐙" ;;     # "octopus"
     esac
     ir=$((bottom - (inv_rows - 1 - r) * inv_spacing))
     c=0
