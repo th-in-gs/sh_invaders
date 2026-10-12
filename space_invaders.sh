@@ -57,7 +57,6 @@ init() {
 
   y2row 16; ground_row=$row               # the arcade's green line
   ship_row=$((ground_row - 1))
-  ship_col=$((left + field_w / 2 - 2))
   # The arcade ends the game when the formation reaches Y=40 (just above
   # the cannon's top)
   y2row 40; land_row=$row
@@ -115,15 +114,9 @@ init() {
   scenery="$scenery${ESC}[0m${ESC}[32m${ESC}[$ground_row;${left}H$line${ESC}[0m"
   scenery="$scenery${ESC}[$((ground_row + 1));$((left + 7))HMove: h/l or arrows  Fire: SPACE  Quit: q"
 
-  score=0
-  lives=3
-  wave=1
-  game_over=0
   quit=0
-  boom=0   # frames left of the ship's explosion (game is paused meanwhile)
-  bell=0   # ring the terminal bell on the next draw
   seed=$$  # random number generator state (see rand)
-  spawn_wave
+  new_game
 
   # Non-blocking, unechoed, unbuffered input: reads return immediately
   old_stty=$(stty -g)
@@ -251,6 +244,18 @@ spawn_wave() {
   inv_tick=0
 }
 
+# Starts a new game (at launch, and on 'r' after game over).
+new_game() {
+  score=0
+  lives=3
+  wave=1
+  game_over=0
+  boom=0   # frames left of the ship's explosion (game is paused meanwhile)
+  bell=0   # ring the terminal bell on the next draw
+  ship_col=$((left + field_w / 2 - 2))
+  spawn_wave
+}
+
 # The ship was hit: lose a life, ring the bell and play the explosion. As in
 # the arcade, the game pauses while the ship explodes and the screen is
 # cleared of shots.
@@ -272,11 +277,12 @@ invaded() {
   game_over=1
 }
 
-# Sets $move (-1, 0, 1), $fire (0/1) and $quit from all keys pressed since
-# the previous frame.
+# Sets $move (-1, 0, 1), $fire (0/1), $restart (0/1) and $quit from all
+# keys pressed since the previous frame.
 read_input() {
   move=0
   fire=0
+  restart=0
   # Terminal is in min 0 time 0 mode, so read returns at once with whatever
   # is pending (status 1, as it sees EOF). IFS= keeps spaces (fire key).
   IFS= read -r keys
@@ -295,6 +301,7 @@ read_input() {
     fi
     case $key in
       q|Q) quit=1 ;;
+      r|R) restart=1 ;;
       h|H|a|A) move=-1 ;;
       l|L|d|D) move=1 ;;
       ' ') fire=1 ;;
@@ -561,7 +568,7 @@ draw() {
     mid_c=$((left + field_w / 2))
     f="$f${ESC}[$((mid_r - 1));$((mid_c - 8))H=== GAME OVER ==="
     f="$f${ESC}[$mid_r;$((mid_c - 5))HScore: $score"
-    f="$f${ESC}[$((mid_r + 1));$((mid_c - 8))HPress 'q' to quit"
+    f="$f${ESC}[$((mid_r + 1));$((mid_c - 16))HPress 'r' to restart, 'q' to quit"
   fi
 
   printf '%s' "$f${ESC}[?2026l"
@@ -577,7 +584,9 @@ main() {
   while [ $quit -eq 0 ]; do
     read_input
 
-    if [ $boom -gt 0 ]; then
+    if [ $game_over -eq 1 ] && [ $restart -eq 1 ]; then
+      new_game
+    elif [ $boom -gt 0 ]; then
       boom=$((boom - 1))
     elif [ $game_over -eq 0 ]; then
       if [ $move -lt 0 ] && [ $ship_col -gt $left ]; then
