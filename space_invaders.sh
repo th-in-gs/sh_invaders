@@ -81,7 +81,18 @@ init() {
   check_locale
 
   trap cleanup INT TERM HUP
+  # Redo the layout when the window is resized (see handle_resize)
+  resized=0
+  too_small=0
+  trap 'resized=1' WINCH 2>/dev/null || true
 
+  layout
+  init_game
+}
+
+# Computes the playfield layout, and everything placed on it, from the
+# terminal size in $rows and $cols.
+layout() {
   # Playfield: field_w columns (plus a border each side) by field_h rows,
   # centred. The arcade screen's aspect would be 32 rows; 24 is the minimum.
   field_h=$rows
@@ -168,7 +179,9 @@ init() {
   scenery="$scenery${ESC}[$hud_row;${wv_x}HWAVE"
   # Row below the ground: cannons (drawn each frame); then the controls
   scenery="$scenery${ESC}[$((ground_row + 2));$((left + 7))HMove: h/l or arrows  Fire: SPACE  Quit: q"
+}
 
+init_game() {
   quit=0
   go_letter=6  # frames per letter of "GAME OVER" (the arcade waits 7 ticks)
   load_hiscore
@@ -192,6 +205,91 @@ init() {
   case $pace_seen in
     ''|*[!0-9]*) pace_seen="" ;;   # no usable clock: keep the initial delay
   esac
+}
+
+# Sets $nr to the new layout's row for row $1 of the old layout. If the
+# playfield's height hasn't changed it just moves; otherwise the row is
+# converted to an arcade height and back, which can round by a row.
+remap_row() {
+  if [ $field_h -eq $o_h ]; then
+    nr=$(($1 + y0 - o_y0))
+  else
+    y2row $(( ( (o_y0 + o_h - $1) * 256 + 128) / o_h ))
+    nr=$row
+  fi
+}
+
+# The window was resized: lay the game out afresh and move everything on it
+# to match, so play carries on where it was. If the window is now too small
+# the game pauses (keeping the old layout) until it is big enough again.
+handle_resize() {
+  resized=0
+  term_size
+  if [ $cols -lt $((field_w + 2)) ] || [ $rows -lt 24 ]; then
+    too_small=1
+    return
+  fi
+  too_small=0
+
+  o_y0=$y0; o_h=$field_h; o_left=$left; o_spacing=$inv_spacing
+  o_cells=$shield_cells
+  o_rack_y=$rack_y
+  layout
+  dx=$((left - o_left))
+
+  # Formation: its bottom row moves to the new layout, and invaders keep
+  # their places relative to it. Rounding mustn't put it above the first
+  # wave's starting row (where it could meet the saucer) or down where it
+  # would land.
+  remap_row $o_rack_y
+  rack_y=$nr
+  [ $rack_y -lt $rack_start_row ] && rack_y=$rack_start_row
+  [ $rack_y -ge $land_row ] && rack_y=$((land_row - 1))
+  rack_x=$((rack_x + dx))
+  moved=""
+  for inv in $invaders; do
+    ir=${inv%%:*}; t=${inv#*:}; ic=${t%%:*}
+    ir=$((rack_y - (o_rack_y - ir) * inv_spacing / o_spacing))
+    moved="$moved $ir:$((ic + dx)):${t#*:}"
+  done
+  invaders=$moved
+
+  # Shots move too; any now outside the playfield are dropped
+  moved=""
+  for b in $bullets; do
+    remap_row ${b%:*}
+    [ $nr -ge $top_row ] && [ $nr -lt $ship_row ] &&
+      moved="$moved $nr:$((${b#*:} + dx))"
+  done
+  bullets=$moved
+  moved=""
+  for m in $bombs; do
+    remap_row ${m%%:*}; t=${m#*:}
+    [ $nr -ge $top_row ] && [ $nr -lt $ground_row ] &&
+      moved="$moved $nr:$((${t%%:*} + dx)):${t#*:}"
+  done
+  bombs=$moved
+
+  ship_col=$((ship_col + dx))
+  [ $saucer_x -ne 0 ] && saucer_x=$((saucer_x + dx))
+
+  # Shields: the cells are listed in the same order in both layouts, so
+  # carry each cell's damage across. Read them all first: old and new cells
+  # can share positions.
+  hps=""
+  for o in $o_cells; do
+    or=${o%%:*}; t=${o#*:}; oc=${t%%:*}
+    eval "hps=\"\$hps \${sh_${or}_${oc}:-0}\"; unset sh_${or}_${oc}"
+  done
+  for s in $shield_cells; do
+    hps=${hps# }; hp=${hps%% *}; hps=${hps#"$hp"}
+    sr=${s%%:*}; t=${s#*:}; sc=${t%%:*}
+    eval "sh_${sr}_${sc}=$hp"
+  done
+
+  # Redraw everything that is normally cached
+  shields_dirty=1
+  drawn_invaders="#"
 }
 
 # ---------------------------------------------------------------------------
@@ -759,6 +857,10 @@ check_saucer() {
 # ---------------------------------------------------------------------------
 
 draw() {
+  if [ $too_small -eq 1 ]; then
+    printf '%s' "${ESC}[?2026h${ESC}[H${ESC}[2JWindow too small: ${cols}x${rows}, need at least $((field_w + 2))x24. Paused (q quits).${ESC}[?2026l"
+    return
+  fi
   f="${ESC}[?2026h${ESC}[H${ESC}[2J$scenery"
   [ $bell -eq 1 ] && { f="$f$BEL"; bell=0; }
 
@@ -1032,8 +1134,11 @@ main() {
 
   while [ $quit -eq 0 ]; do
     read_input
+    [ $resized -eq 1 ] && handle_resize
 
-    if [ $mode = title ]; then
+    if [ $too_small -eq 1 ]; then
+      :   # paused until the window is big enough again
+    elif [ $mode = title ]; then
       title_t=$((title_t + 1))
       [ $restart -eq 1 ] && new_game
     elif [ $game_over -eq 1 ] && [ $restart -eq 1 ]; then
