@@ -115,7 +115,6 @@ init() {
   scenery="$scenery${ESC}[$((ground_row + 1));$((left + 7))HMove: h/l or arrows  Fire: SPACE  Quit: q"
 
   quit=0
-  seed=$$  # random number generator state (see rand)
   new_game
 
   # Non-blocking, unechoed, unbuffered input: reads return immediately
@@ -174,22 +173,25 @@ check_shields() {
   bombs=$remaining
 }
 
-# Sets $rnd to a pseudo-random number in 0..$1-1 without a subprocess
-# (POSIX sh has no $RANDOM). Linear congruential generator.
-rand() {
-  seed=$(( (seed * 1103515245 + 12345) % 2147483648 ))
-  rnd=$(( (seed / 65536) % $1 ))
+# Sets $reload: how long (in frames) every falling invader shot must have
+# been falling before another may be fired. The arcade's table at 1AA1, by
+# score: 48/16/11/8/7 shot steps of 3 frames at 60 Hz, converted to ~52 fps.
+reload_bombs() {
+  if [ $score -lt 200 ]; then reload=125
+  elif [ $score -lt 1000 ]; then reload=42
+  elif [ $score -lt 2000 ]; then reload=29
+  elif [ $score -lt 3000 ]; then reload=21
+  else reload=18
+  fi
 }
 
-# Frames before the invaders may fire again. The arcade's table, by score:
-# 48/16/11/8/7 shot steps of 3 frames at 60 Hz, converted to ~52 fps.
-reload_bombs() {
-  if [ $score -lt 200 ]; then bomb_wait=125
-  elif [ $score -lt 1000 ]; then bomb_wait=42
-  elif [ $score -lt 2000 ]; then bomb_wait=29
-  elif [ $score -lt 3000 ]; then bomb_wait=21
-  else bomb_wait=18
-  fi
+# The arcade's column-firing table (1D00), columns numbered 1-11 from the
+# left. The plunger shot cycles through entries 0-15, the squiggly shot
+# through entries 6-20. Sets $col to entry $1.
+col_fire_table() {
+  set -- $(($1 + 1)) 1 7 1 1 1 4 11 1 6 3 1 1 11 9 2 8 2 11 4 7 10
+  shift $1
+  col=$1
 }
 
 # Points by invader type, as in the arcade (top row 30, middle 20, bottom 10)
@@ -242,8 +244,8 @@ spawn_wave() {
   bombs=""
   shot_tick=0
   bomb_tick=0
-  bomb_turn=0
-  reload_bombs
+  shot_turn=0
+  rack_x=$inv_start_col  # screen column of the formation's column 1
   inv_dir=1
   inv_tick=0
 }
@@ -257,6 +259,9 @@ new_game() {
   boom=0   # frames left of the ship's explosion (game is paused meanwhile)
   bell=0   # ring the terminal bell on the next draw
   ship_col=$((left + field_w / 2 - 2))
+  plu_idx=0      # positions in the column-firing table
+  squ_idx=6
+  fire_delay=42  # invaders hold fire for 48 counts at 60 Hz at the start
   spawn_wave
 }
 
@@ -269,7 +274,7 @@ player_hit() {
   boom=30
   bullets=""
   bombs=""
-  reload_bombs
+  fire_delay=42  # as at the start, the invaders hold fire for a while
   [ $lives -le 0 ] && game_over=1
 }
 
@@ -400,89 +405,103 @@ move_invaders() {
     moved="$moved $ir:$ic:$3"
   done
   invaders=$moved
+  rack_x=$((rack_x + inv_dir))
   return 0
 }
 
 # Invader shots fall one row every $bomb_period_slow frames, or every
-# $bomb_period_fast frames once 8 or fewer invaders are left.
+# $bomb_period_fast frames once 8 or fewer invaders are left. Each shot also
+# counts its age in frames (the arcade's step count, used for reloading).
 move_bombs() {
+  [ -z "$bombs" ] && return
   bomb_tick=$((bomb_tick + 1))
-  if [ $inv_count -le 8 ]; then
-    [ $bomb_tick -lt $bomb_period_fast ] && return
-  else
-    [ $bomb_tick -lt $bomb_period_slow ] && return
+  period=$bomb_period_slow
+  [ $inv_count -le 8 ] && period=$bomb_period_fast
+  step=0
+  if [ $bomb_tick -ge $period ]; then
+    step=1
+    bomb_tick=0
   fi
-  bomb_tick=0
   moved=""
   for m in $bombs; do
     IFS=:
     set -- $m
     unset IFS
-    mr=$(($1 + 1))
-    [ $mr -lt $ground_row ] && moved="$moved $mr:$2:$3"
+    mr=$(($1 + step))
+    [ $mr -lt $ground_row ] && moved="$moved $mr:$2:$3:$(($4 + 1))"
   done
   bombs=$moved
 }
 
-# Fires a new invader shot when reloaded. As in the arcade there are three
-# shot types, taking turns, with at most one of each in flight:
-#   r  "rolling":  aimed at the player
-#   p  "plunger":  random column; disabled when one invader is left
-#   s  "squiggly": random column; survives meeting the player's shot
-# Shots come from the lowest invader in the chosen column.
+# Invader firing, following the arcade's code (0476-0643). There are three
+# shot types, at most one of each in flight, and each gets a chance to fire
+# on its own frame in turn:
+#   r  "rolling":  from the column directly over the player
+#   p  "plunger":  from columns in the table's order; disabled when one
+#                  invader is left
+#   s  "squiggly": from columns in the table's order; survives meeting the
+#                  player's shot
+# A shot may only be fired if every shot already falling has been falling
+# for longer than $reload. It comes from the lowest invader in its column;
+# if that column has none left, no shot is fired (but the table still
+# advances).
 drop_bomb() {
-  bomb_wait=$((bomb_wait - 1))
-  [ $bomb_wait -gt 0 ] && return
+  if [ $fire_delay -gt 0 ]; then
+    fire_delay=$((fire_delay - 1))
+    return
+  fi
   [ -z "$invaders" ] && return
 
-  # Next type in turn that isn't already in flight
-  inflight=" "
-  for m in $bombs; do inflight="$inflight${m##*:} "; done
-  bt=""
-  t=0
-  while [ $t -lt 3 ]; do
-    case $bomb_turn in
-      0) cand=r ;;
-      1) cand=p ;;
-      *) cand=s ;;
-    esac
-    bomb_turn=$(( (bomb_turn + 1) % 3 ))
-    t=$((t + 1))
-    [ $cand = p ] && [ $inv_count -eq 1 ] && continue
-    case $inflight in
-      *" $cand "*) continue ;;
-    esac
-    bt=$cand
-    break
+  shot_turn=$(( (shot_turn + 1) % 3 ))
+  case $shot_turn in
+    0) bt=r ;;
+    1) bt=p ;;
+    *) bt=s ;;
+  esac
+  [ $bt = p ] && [ $inv_count -eq 1 ] && return
+
+  reload_bombs
+  for m in $bombs; do
+    IFS=:
+    set -- $m
+    unset IFS
+    [ $3 = $bt ] && return          # this type is already in flight
+    [ $4 -le $reload ] && return    # another shot was fired too recently
   done
-  [ -z "$bt" ] && return
 
-  if [ $bt = r ]; then
-    target=$((ship_col + 1))
-  else
-    set -- $invaders
-    rand $#
-    shift $rnd
-    target=${1#*:}; target=${target%%:*}
-  fi
+  case $bt in
+    r)
+      # Formation column (1-11) over the player's centre, clamped to the
+      # formation (the arcade uses column 11 when the player is beyond it)
+      x=$((ship_col + 1 - rack_x))
+      if [ $x -lt 0 ]; then col=1; else col=$((x / 4 + 1)); fi
+      [ $col -gt 11 ] && col=11 ;;
+    p)
+      col_fire_table $plu_idx
+      plu_idx=$((plu_idx + 1))
+      [ $plu_idx -gt 15 ] && plu_idx=0 ;;
+    s)
+      col_fire_table $squ_idx
+      squ_idx=$((squ_idx + 1))
+      [ $squ_idx -gt 20 ] && squ_idx=6 ;;
+  esac
 
-  # Sprites are two columns wide; fire from whichever half is nearer the
-  # target, so an aimed shot can't fall just beside the ship.
-  best=-1; sr=0; sc=0
+  # Lowest live invader in that column
+  colx=$((rack_x + (col - 1) * 4))
+  sr=0
   for inv in $invaders; do
     IFS=:
     set -- $inv
     unset IFS
-    c=$2
-    [ $target -gt $c ] && c=$((c + 1))
-    d=$((c - target)); [ $d -lt 0 ] && d=$((-d))
-    if [ $best -lt 0 ] || [ $d -lt $best ] ||
-       { [ $d -eq $best ] && [ $1 -gt $sr ]; }; then
-      best=$d; sr=$1; sc=$c
-    fi
+    [ $2 -eq $colx ] && [ $1 -gt $sr ] && sr=$1
   done
-  bombs="$bombs $((sr + 1)):$sc:$bt"
-  reload_bombs
+  [ $sr -eq 0 ] && return
+
+  # Sprites are two columns wide; the rolling shot falls from whichever
+  # half is nearer the player, the others from the left half
+  sc=$colx
+  [ $bt = r ] && [ $((ship_col + 1)) -gt $colx ] && sc=$((colx + 1))
+  bombs="$bombs $((sr + 1)):$sc:$bt:0"
 }
 
 # Handles invader shots hitting the ship or meeting the player's shot. As in
