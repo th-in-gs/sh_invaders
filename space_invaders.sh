@@ -809,11 +809,12 @@ draw() {
 # ---------------------------------------------------------------------------
 
 # Sleeps between frames, keeping the game at ~52 fps on any machine. Most of
-# a frame is the sleep plus the cost of starting the sleep program, which
-# varies a lot (~6-10ms on macOS, much less on Linux), so the actual frame
-# rate is measured and the delay adjusted to suit. POSIX sh has no
-# sub-second clock, so the rate is measured over 2-second windows that
-# start and end on second boundaries (date +%s, checked every 4th frame).
+# a frame is the sleep, and a sleep takes longer than requested: measured on
+# a Mac running macOS 27, ~1.6ms to start the sleep program plus ~3-4ms of
+# oversleep. Other systems will differ, so the actual frame rate is measured
+# and the delay adjusted to suit. POSIX sh has no sub-second clock, so the
+# rate is measured over 2-second windows that start and end on second
+# boundaries (date +%s, checked every 4th frame).
 pace() {
   if [ -n "$pace_seen" ]; then
     pace_frames=$((pace_frames + 1))
