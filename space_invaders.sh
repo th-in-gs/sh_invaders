@@ -118,11 +118,12 @@ layout() {
   right=$((x0 + field_w))
   hud_row=$((y0 + 1))                     # score headings; values below
   top_row=$((y0 + 3))                     # shots vanish above this
-  # Score headings, laid out like the arcade's " SCORE<1> HI-SCORE ..."
-  # (this one-player game shows the wave in place of SCORE<2>)
-  sc_x=$((left + 3))
+  # Score headings, laid out like the arcade's " SCORE<1> HI-SCORE ...".
+  # This game has one player, so it shows just SCORE, and the wave in place
+  # of SCORE<2>.
+  sc_x=$((left + 5))
   hi_x=$((left + field_w / 2 - 4))
-  wv_x=$((right - 7))
+  wv_x=$((right - 8))   # WAVE ends as far in from the right as SCORE starts
 
   y2row 16; ground_row=$row               # the arcade's green line
   ship_row=$((ground_row - 1))
@@ -187,7 +188,7 @@ layout() {
   # Braces matter: bash 3.2 can read a multibyte character as part of a name
   while [ $c -lt $field_w ]; do line="${line}─"; c=$((c + 1)); done
   scenery="$scenery${ESC}[0m${ESC}[32m${ESC}[$ground_row;${left}H$line${ESC}[0m"
-  scenery="$scenery${ESC}[$hud_row;${sc_x}HSCORE<1>${ESC}[$hud_row;${hi_x}HHI-SCORE"
+  scenery="$scenery${ESC}[$hud_row;${sc_x}HSCORE${ESC}[$hud_row;${hi_x}HHI-SCORE"
   scenery="$scenery${ESC}[$hud_row;${wv_x}HWAVE"
   # Row below the ground: cannons (drawn each frame); then the controls
   help="MOVE: H/L OR ARROWS   FIRE: SPACE   QUIT: Q"
@@ -889,10 +890,11 @@ draw() {
 
   # Score values under their headings, zero-padded like the arcade's
   pad4 $score
-  f="$f${ESC}[$((hud_row + 1));$((sc_x + 2))H$p4"
+  f="$f${ESC}[$((hud_row + 1));${sc_x}H$p4"
   pad4 $hi
   f="$f${ESC}[$((hud_row + 1));$((hi_x + 2))H$p4"
-  f="$f${ESC}[$((hud_row + 1));$((wv_x + (4 - ${#wave}) / 2))H$wave"
+  # Right-justified under WAVE, mirroring the score under SCORE
+  f="$f${ESC}[$((hud_row + 1));$((wv_x + 4 - ${#wave}))H$wave"
 
   # Below the ground, as in the arcade: the number of cannons (including
   # the one in play), then a picture of each spare. The number is in
