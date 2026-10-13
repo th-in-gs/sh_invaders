@@ -593,16 +593,31 @@ draw() {
     f="$f${ESC}[${b%:*};${b#*:}H!"
   done
 
-  # The squiggly shot alternates \ and / as it falls, like the arcade's
-  # zig-zag; the others are plain lines
+  # Invader shots animate as they fall, frame chosen by row, after the
+  # arcade's shot sprites:
+  #   rolling   { | } |   a spike circling the shaft
+  #   plunger   ┬ ┼ ┴ ┼   a crossbar sliding along the shaft
+  #   squiggly  \ /       a zig-zag
   for m in $bombs; do
     IFS=:
     set -- $m
     unset IFS
-    g='|'
-    if [ $3 = s ]; then
-      if [ $(($1 % 2)) -eq 0 ]; then g='\'; else g='/'; fi
-    fi
+    case $3 in
+      r)
+        case $(($1 % 4)) in
+          0) g='{' ;;
+          2) g='}' ;;
+          *) g='|' ;;
+        esac ;;
+      p)
+        case $(($1 % 4)) in
+          0) g='┬' ;;
+          2) g='┴' ;;
+          *) g='┼' ;;
+        esac ;;
+      *)
+        if [ $(($1 % 2)) -eq 0 ]; then g='\'; else g='/'; fi ;;
+    esac
     f="$f${ESC}[$1;$2H$g"
   done
 
