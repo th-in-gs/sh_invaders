@@ -199,10 +199,18 @@ the cell is effectively uniform.
 | Plunger | 28% | 28% | 12% | 32% |
 | Rolling | 46% | 9% | 6% | 40% |
 
-The plan is to choose among the four outcomes deterministically from a
-frame counter, with these frequencies, so no random number generator is
-needed. In the arcade, the outcome is decided by pixel positions the game
-doesn't have; picking it by frequency stands in for them.
+The game (`meet_outcome` in `space_invaders.sh`) chooses among the four
+outcomes with these frequencies, rounded to whole percentages, using a
+count of frames since startup: `frame % 100`. Which frame two shots meet
+on depends on the player's timing, to the 1/60 s, much as the arcade's
+pixel positions do. So there's no random number generator, and nothing
+beyond POSIX sh (`/dev/urandom` and `$RANDOM` aren't POSIX). Invader shots
+move every third frame, but 100 has no factor of 3, so that doesn't skew
+the choice.
+
+A pair of shots that pass each other may still be level on the next
+frame. So each invader shot type remembers which player shot passed it,
+and isn't rolled for again until a new shot comes along.
 
 What the cell-level version can't show is *where* things happen. In the
 arcade, a destroyed invader shot usually dies a frame or three later, a few

@@ -231,6 +231,8 @@ init_game() {
   tput civis 2>/dev/null || printf '%s' "${ESC}[?25l"
   tput smcup 2>/dev/null || printf '%s' "${ESC}[?1049h"
 
+  frame=0           # counts every frame from startup (see check_bombs)
+
   # Frame pacing (see pace)
   target_us=16667   # 60 fps, the arcade's rate
   delay_us=9000     # initial sleep per frame, adjusted as the game runs
@@ -472,6 +474,7 @@ new_game() {
   bell=0   # ring the terminal bell on the next draw
   ship_col=$((left + field_w / 2 - 2))
   shots=0               # player shots fired (sets saucer direction and score)
+  passed_r="" passed_p="" passed_s=""  # player shot each type has passed
   saucer_timer=1536     # frames between saucers
   saucer_pending=0
   plu_idx=0      # positions in the column-firing table
@@ -738,8 +741,7 @@ move_bombs() {
 #   r  "rolling":  from the column directly over the player
 #   p  "plunger":  from columns in the table's order; disabled when one
 #                  invader is left
-#   s  "squiggly": from columns in the table's order; survives meeting the
-#                  player's shot
+#   s  "squiggly": from columns in the table's order
 # A shot may only be fired if every shot already falling has made more than
 # $reload steps. It comes from the lowest invader in its column; if that
 # column has none left, no shot is fired (but the table still advances).
@@ -799,11 +801,50 @@ drop_bomb() {
   # A new shot starts below the invader, with 1 step made (as in the arcade)
   rowy $((sr + 1))
   bombs="$bombs $((sr + 1)):$sc:$bt:1:$ry"
+  eval "passed_$bt="
 }
 
-# Handles invader shots hitting the ship or meeting the player's shot. As in
-# the arcade, when the two shots meet the player's is destroyed, and so is
-# the invader's unless it is the squiggly shot.
+# Decides what happens when the player's shot meets an invader shot of type
+# $mt, setting $outcome to pass (both carry on), bomb (only the invader's
+# survives), bullet (only the player's survives) or neither.
+#
+# The arcade decides pixel by pixel. This game only knows positions to the
+# cell, so it uses the arcade's frequencies for shots meeting within one
+# column, simulated in docs/shot-collisions (percentages):
+#
+#                  pass  bomb  bullet  neither
+#   rolling          45    14       6       35
+#   plunger          28    22       9       41
+#   squiggly         25     6       6       63
+#   with 8 or fewer invaders, when shots fall faster:
+#   rolling          45     9       6       40
+#   plunger          28    28      12       32
+#   squiggly         25    29       6       40
+#
+# The choice comes from the frame count. Which frame shots meet on depends
+# on the player's timing, to the 1/60 s, much as the arcade's pixel
+# positions do. (100 has no factor of 3, so invader shots moving every
+# third frame doesn't skew it.)
+meet_outcome() {
+  if [ $inv_count -le 8 ]; then
+    case $mt in r) set -- 45 9 6 ;; p) set -- 28 28 12 ;; *) set -- 25 29 6 ;; esac
+  else
+    case $mt in r) set -- 45 14 6 ;; p) set -- 28 22 9 ;; *) set -- 25 6 6 ;; esac
+  fi
+  roll=$((frame % 100))
+  if [ $roll -lt $1 ]; then
+    outcome=pass
+  elif [ $roll -lt $(($1 + $2)) ]; then
+    outcome=bomb
+  elif [ $roll -lt $(($1 + $2 + $3)) ]; then
+    outcome=bullet
+  else
+    outcome=neither
+  fi
+}
+
+# Handles invader shots hitting the ship or meeting the player's shot (see
+# meet_outcome).
 check_bombs() {
   shot=0
   remaining=""
@@ -818,8 +859,11 @@ check_bombs() {
       shot=1
       continue
     fi
+    # Shots that have passed each other may still be level for a frame
+    eval "pv=\$passed_$mt"
+    [ "$pv" = $shots ] && bullets_here="" || bullets_here=$bullets
     met=0
-    for b in $bullets; do
+    for b in $bullets_here; do
       # The shots move toward each other, so they can pass between frames
       br=${b%:*}
       if [ ${b#*:} -eq $mc ] && [ $br -ge $((mr - 1)) ] && [ $br -le $mr ]; then
@@ -827,8 +871,13 @@ check_bombs() {
       fi
     done
     if [ $met -eq 1 ]; then
-      bullets=""
-      [ "$mt" != s ] && continue
+      meet_outcome
+      case $outcome in
+        pass) eval "passed_$mt=$shots" ;;
+        bomb) bullets="" ;;
+        bullet) continue ;;
+        neither) bullets=""; continue ;;
+      esac
     fi
     remaining="$remaining $m"
   done
@@ -1209,6 +1258,7 @@ main() {
   init
 
   while [ $quit -eq 0 ]; do
+    frame=$((frame + 1))
     read_input
     [ $resized -eq 1 ] && handle_resize
 
