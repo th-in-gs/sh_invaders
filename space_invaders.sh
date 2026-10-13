@@ -1,6 +1,6 @@
 #!/bin/sh
 # #!/bin/sh INVADERS: a Space Invaders clone in POSIX shell
-# Emoji invaders, '!' for bullets, Unicode ship.
+# Emoji invaders, '¡' for bullets, Unicode ship.
 #
 # Geometry and timings follow the 1978 arcade game (224x256 pixel screen),
 # scaled so that one terminal column is ~4 pixels: the playfield is a fixed
@@ -614,9 +614,8 @@ check_bombs() {
     set -- $m
     unset IFS
     mr=$1; mc=$2; mt=$3
-    # The ship's hitbox is its full 3x2 cell box: a shot touching the top of
-    # either base triangle counts, not just one landing on it next frame.
-    if [ $mr -ge $((ship_row - 1)) ] && [ $mr -le $ship_row ] &&
+    # The cannon is one row of 3 cells, like the arcade's 13x8-pixel sprite
+    if [ $mr -eq $ship_row ] &&
        [ $mc -ge $ship_col ] && [ $mc -le $((ship_col + 2)) ]; then
       shot=1
       continue
@@ -741,15 +740,15 @@ draw() {
   if [ $boom -gt 0 ]; then
     # Two-frame explosion, alternating every 4 frames like the arcade's
     if [ $((boom / 4 % 2)) -eq 0 ]; then
-      f="$f${ESC}[$((ship_row - 1));${ship_col}H\\|/"
-      f="$f${ESC}[$ship_row;${ship_col}H/|\\"
+      f="$f${ESC}[$ship_row;${ship_col}H\\|/"
     else
-      f="$f${ESC}[$((ship_row - 1));${ship_col}H.*."
       f="$f${ESC}[$ship_row;${ship_col}H*.*"
     fi
   elif [ $game_over -eq 0 ]; then   # the last cannon stays destroyed
-    f="$f${ESC}[$((ship_row - 1));$((ship_col + 1))H▲"
-    f="$f${ESC}[$ship_row;${ship_col}H◢ ◣"
+    # One row, like the arcade's: sloping shoulders with a solid point.
+    # These characters are in SF Mono (Terminal.app's default font), so
+    # nothing is borrowed from another font.
+    f="$f${ESC}[$ship_row;${ship_col}H╱▲╲"
   fi
 
   # Shields (green, like the arcade's screen overlay) change only when hit,
@@ -806,7 +805,7 @@ draw() {
   f="$f$inv_frame"
 
   for b in $bullets; do
-    f="$f${ESC}[${b%:*};${b#*:}H!"
+    f="$f${ESC}[${b%:*};${b#*:}H¡"   # dot first, as it leaves the cannon
   done
 
   # Invader shots animate as they fall, frame chosen by row, after the
