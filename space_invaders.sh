@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/bin/sh
 # #!/bin/sh INVADERS: a Space Invaders clone in POSIX shell
 # Emoji invaders, '!' for bullets, Unicode ship.
 #
