@@ -67,6 +67,12 @@ init() {
   #   ▟████▙
   #   ██  ██
   # Cells are listed as "row:col:kind" (L/R = rounded top corners).
+  # The flying saucer crosses at Y=208. Its timer only runs once the
+  # formation is below the first wave's starting height (Y=120).
+  y2row 208; saucer_row=$row
+  [ $saucer_row -lt $top_row ] && saucer_row=$top_row
+  y2row 120; rack_start_row=$row
+
   y2row 48; shield_bot=$row
   shield_top=$((shield_bot - 1))
   shield_cells=""
@@ -246,6 +252,9 @@ spawn_wave() {
   bomb_tick=0
   shot_turn=0
   rack_x=$inv_start_col  # screen column of the formation's column 1
+  rack_y=$bottom         # screen row of the formation's bottom row
+  saucer_x=0             # no saucer on screen
+  saucer_hit=0
   inv_dir=1
   inv_tick=0
 }
@@ -259,6 +268,9 @@ new_game() {
   boom=0   # frames left of the ship's explosion (game is paused meanwhile)
   bell=0   # ring the terminal bell on the next draw
   ship_col=$((left + field_w / 2 - 2))
+  shots=0               # player shots fired (sets saucer direction and score)
+  saucer_timer=1331     # 1536 frames at 60 Hz between saucers
+  saucer_pending=0
   plu_idx=0      # positions in the column-firing table
   squ_idx=6
   fire_delay=42  # invaders hold fire for 48 counts at 60 Hz at the start
@@ -406,6 +418,7 @@ move_invaders() {
   done
   invaders=$moved
   rack_x=$((rack_x + inv_dir))
+  rack_y=$((rack_y + drop))
   return 0
 }
 
@@ -459,6 +472,8 @@ drop_bomb() {
     *) bt=s ;;
   esac
   [ $bt = p ] && [ $inv_count -eq 1 ] && return
+  # The saucer uses the squiggly shot's slot in the arcade
+  [ $bt = s ] && [ $saucer_x -ne 0 ] && return
 
   reload_bombs
   for m in $bombs; do
@@ -541,6 +556,85 @@ check_bombs() {
 }
 
 # ---------------------------------------------------------------------------
+# Flying saucer, following the arcade's code (0447-0475, 0682-0739, 0913)
+# ---------------------------------------------------------------------------
+
+# Sets $saucer_pts from the arcade's saucer score table (1D54), indexed by
+# the number of shots fired. The arcade's index wraps after 15 entries (a
+# bug: the table has 16), so 300 points come with shots 8, 23, 38, ...
+saucer_points() {
+  set -- $((shots % 15 + 1)) 10 5 5 10 15 10 10 5 30 10 10 10 5 15 10
+  shift $1
+  saucer_pts=$(($1 * 10))
+}
+
+# Starts, moves and retires the saucer.
+#  - A saucer is due every 1536 frames at 60 Hz, counted only once the
+#    formation is below the first wave's starting height.
+#  - It sets off when due, with 8 or more invaders left and no squiggly shot
+#    falling (it shares the squiggly shot's slot).
+#  - An odd number of shots fired sends it left to right, even right to left.
+#  - It moves about 40 pixels a second (a column every 5 frames).
+update_saucer() {
+  if [ $rack_y -gt $rack_start_row ]; then
+    saucer_timer=$((saucer_timer - 1))
+    if [ $saucer_timer -le 0 ]; then
+      saucer_timer=1331
+      saucer_pending=1
+    fi
+  fi
+
+  # Hit: explosion, then the score in its place; points added as it shows
+  if [ $saucer_hit -gt 0 ]; then
+    saucer_hit=$((saucer_hit - 1))
+    [ $saucer_hit -eq 62 ] && score=$((score + saucer_pts))
+    if [ $saucer_hit -eq 0 ]; then
+      saucer_x=0
+      saucer_pending=0
+    fi
+    return
+  fi
+
+  if [ $saucer_x -eq 0 ]; then
+    [ $saucer_pending -eq 1 ] && [ $inv_count -ge 8 ] || return
+    case $bombs in
+      *:s:*) return ;;
+    esac
+    if [ $((shots % 2)) -eq 1 ]; then
+      saucer_x=$left; saucer_dir=1
+    else
+      saucer_x=$((right - 1)); saucer_dir=-1
+    fi
+    saucer_tick=0
+    return
+  fi
+
+  saucer_tick=$((saucer_tick + 1))
+  [ $saucer_tick -lt 5 ] && return
+  saucer_tick=0
+  saucer_x=$((saucer_x + saucer_dir))
+  if [ $saucer_x -lt $left ] || [ $((saucer_x + 1)) -gt $right ]; then
+    saucer_x=0
+    saucer_pending=0
+  fi
+}
+
+# The player's shot hitting the saucer (two columns wide, like the invaders).
+check_saucer() {
+  [ $saucer_x -eq 0 ] && return
+  [ $saucer_hit -gt 0 ] && return
+  for b in $bullets; do
+    bc=${b#*:}
+    if [ ${b%:*} -eq $saucer_row ] && [ $bc -ge $saucer_x ] &&
+       [ $bc -le $((saucer_x + 1)) ]; then
+      bullets=""
+      saucer_points
+      saucer_hit=83   # 32 ticks of 3 frames at 60 Hz
+    fi
+  done
+}
+
+# ---------------------------------------------------------------------------
 # Rendering: build the whole frame in a string, then emit it in one go
 # (wrapped in synchronized-output escapes where the terminal supports them).
 # ---------------------------------------------------------------------------
@@ -593,6 +687,19 @@ draw() {
     shields_dirty=0
   fi
   f="$f$shield_frame"
+
+  # The saucer, or once hit its explosion and then its score (in red, like
+  # the arcade's top screen overlay)
+  if [ $saucer_x -ne 0 ]; then
+    if [ $saucer_hit -eq 0 ]; then
+      f="$f${ESC}[$saucer_row;${saucer_x}H🛸"
+    else
+      if [ $saucer_hit -gt 62 ]; then txt='<*>'; else txt=$saucer_pts; fi
+      tx=$saucer_x
+      [ $((tx + ${#txt} - 1)) -gt $right ] && tx=$((right - ${#txt} + 1))
+      f="$f${ESC}[$saucer_row;${tx}H${ESC}[31m$txt${ESC}[0m"
+    fi
+  fi
 
   # The formation rarely changes between frames (at the start it steps every
   # ~2s), so only re-render it when it has.
@@ -674,10 +781,12 @@ main() {
       # One shot on screen at a time, as in the arcade
       if [ $fire -eq 1 ] && [ -z "$bullets" ]; then
         bullets="$((ship_row - 1)):$((ship_col + 1))"
+        shots=$((shots + 1))
         shot_tick=0
       fi
 
       move_bullets
+      check_saucer
       check_shields
       check_collisions
       if move_invaders; then
@@ -690,6 +799,7 @@ main() {
         drop_bomb
         check_shields
         check_bombs
+        update_saucer
       fi
       if [ -z "$invaders" ]; then
         wave=$((wave + 1))
