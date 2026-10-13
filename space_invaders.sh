@@ -69,10 +69,10 @@ init() {
   # Cells are listed as "row:col:kind" (L/R = rounded top corners).
   # The flying saucer crosses at Y=208. Its timer only runs once the
   # formation is below the first wave's starting height (Y=120).
-  # It is drawn "_⏏_" (dome on a body, in red like the arcade's overlay):
-  # 3 columns, close to the arcade's 16 pixels.
+  # It is drawn " ◜◝ " underlined: a dome over a flat body, in red like the
+  # arcade's overlay, 4 columns wide like the arcade's 16 pixels.
   y2row 208; saucer_row=$row
-  saucer_w=3
+  saucer_w=4
   [ $saucer_row -lt $top_row ] && saucer_row=$top_row
   y2row 120; rack_start_row=$row
 
@@ -695,7 +695,7 @@ draw() {
   # the arcade's top screen overlay)
   if [ $saucer_x -ne 0 ]; then
     if [ $saucer_hit -eq 0 ]; then
-      f="$f${ESC}[$saucer_row;${saucer_x}H${ESC}[31m_⏏_${ESC}[0m"
+      f="$f${ESC}[$saucer_row;${saucer_x}H${ESC}[31;4m ◜◝ ${ESC}[0m"
     else
       if [ $saucer_hit -gt 62 ]; then txt='<*>'; else txt=$saucer_pts; fi
       tx=$saucer_x
