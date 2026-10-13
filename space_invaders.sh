@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Space Invaders clone in POSIX shell
+# #!/bin/sh INVADERS: a Space Invaders clone in POSIX shell
 # Emoji invaders, '!' for bullets, Unicode ship.
 #
 # Geometry and timings follow the 1978 arcade game (224x256 pixel screen),
@@ -156,7 +156,11 @@ init() {
   scenery="$scenery${ESC}[$((ground_row + 1));$((left + 7))HMove: h/l or arrows  Fire: SPACE  Quit: q"
 
   quit=0
-  new_game
+  go_letter=6  # frames per letter of "GAME OVER" (the arcade waits 7 ticks)
+  load_hiscore
+  new_game     # sets up a game (so the score line has something to show) ...
+  mode=title   # ... but start on the title screen, like the arcade
+  title_t=0
 
   # Non-blocking, unechoed, unbuffered input: reads return immediately
   old_stty=$(stty -g)
@@ -307,6 +311,7 @@ spawn_wave() {
 
 # Starts a new game (at launch, and on 'r' after game over).
 new_game() {
+  mode=play
   score=0
   lives=3
   wave=1
@@ -333,7 +338,7 @@ player_hit() {
   bullets=""
   bombs=""
   fire_delay=42  # as at the start, the invaders hold fire for a while
-  [ $lives -le 0 ] && game_over=1
+  [ $lives -le 0 ] && end_game
 }
 
 # Invaders reached the bottom: as in the arcade, the ship is destroyed and
@@ -341,7 +346,40 @@ player_hit() {
 invaded() {
   player_hit
   lives=0
+  end_game
+}
+
+# The game has ended. As in the arcade, the high score is updated at once;
+# "GAME OVER" is then typed out (once the explosion is over), followed by a
+# pause and the title screen. Not doing it twice matters when invaders land
+# on the last life.
+end_game() {
+  [ $game_over -eq 1 ] && return
   game_over=1
+  go_t=0
+  if [ $score -gt $hi ]; then
+    hi=$score
+    save_hiscore
+  fi
+}
+
+# The high score is kept in a file in the home directory. Reading and
+# writing use only shell built-ins; failures (no HOME, read-only home) are
+# ignored and just mean the high score isn't kept.
+load_hiscore() {
+  hi=0
+  hi_file=""
+  [ -n "${HOME:-}" ] && hi_file="$HOME/.space_invaders_hiscore"
+  [ -n "$hi_file" ] && [ -r "$hi_file" ] || return
+  { read -r hi < "$hi_file"; } 2>/dev/null || hi=0
+  case $hi in
+    ''|*[!0-9]*) hi=0 ;;
+  esac
+}
+
+save_hiscore() {
+  [ -n "$hi_file" ] || return
+  { printf '%s\n' "$hi" > "$hi_file"; } 2>/dev/null || true
 }
 
 # Sets $move (-1, 0, 1), $fire (0/1), $restart (0/1) and $quit from all
@@ -692,7 +730,13 @@ draw() {
   # Lives are shown in reverse video while the ship explodes
   lives_txt="Lives: $lives"
   [ $boom -gt 0 ] && lives_txt="${ESC}[7m$lives_txt${ESC}[0m"
-  f="$f${ESC}[$hud_row;${left}HScore: $score  $lives_txt  Wave: $wave"
+  f="$f${ESC}[$hud_row;${left}HScore: $score  Hi-Score: $hi  $lives_txt  Wave: $wave"
+
+  if [ $mode = title ]; then
+    draw_title
+    printf '%s' "$f${ESC}[?2026l"
+    return
+  fi
 
   if [ $boom -gt 0 ]; then
     # Two-frame explosion, alternating every 4 frames like the arcade's
@@ -703,7 +747,7 @@ draw() {
       f="$f${ESC}[$((ship_row - 1));${ship_col}H.*."
       f="$f${ESC}[$ship_row;${ship_col}H*.*"
     fi
-  else
+  elif [ $game_over -eq 0 ]; then   # the last cannon stays destroyed
     f="$f${ESC}[$((ship_row - 1));$((ship_col + 1))H▲"
     f="$f${ESC}[$ship_row;${ship_col}H◢ ◣"
   fi
@@ -793,15 +837,68 @@ draw() {
     f="$f${ESC}[$1;$2H$g"
   done
 
-  if [ $game_over -eq 1 ]; then
-    mid_r=$((y0 + field_h / 2))
-    mid_c=$((left + field_w / 2))
-    f="$f${ESC}[$((mid_r - 1));$((mid_c - 8))H=== GAME OVER ==="
-    f="$f${ESC}[$mid_r;$((mid_c - 5))HScore: $score"
-    f="$f${ESC}[$((mid_r + 1));$((mid_c - 16))HPress 'r' to restart, 'q' to quit"
+  # "GAME OVER" typed out near the top over the frozen invaders, as in the
+  # arcade, once the explosion has finished
+  if [ $game_over -eq 1 ] && [ $boom -eq 0 ]; then
+    prefix "GAME OVER" $((go_t / go_letter))
+    f="$f${ESC}[$((top_row + 1));$((left + field_w / 2 - 4))H$pre"
   fi
 
   printf '%s' "$f${ESC}[?2026l"
+}
+
+# Sets $pre to the first $2 characters of $1 (ASCII text) without a
+# subshell, by stripping a pattern of $2 '?' wildcards.
+prefix() {
+  if [ $2 -ge ${#1} ]; then
+    pre=$1
+    return
+  fi
+  q=""
+  i=0
+  while [ $i -lt $2 ]; do q="$q?"; i=$((i + 1)); done
+  rest=${1#$q}
+  pre=${1%"$rest"}
+}
+
+# Adds the title screen to the frame, after the arcade's attract screen:
+# "PLAY #!/bin/sh INVADERS" and the score advance table, typed out a letter at
+# a time ($title_t counts frames since it appeared). The arcade's "INSERT
+# COIN" becomes the keys to press, shown straight away.
+draw_title() {
+  mid_c=$((left + field_w / 2))
+  # Centre the 17 rows of text between the score line and the ground
+  avail=$((ground_row - top_row - 1))
+  r0=$((top_row + 1 + (avail - 17) / 2))
+  [ $r0 -le $top_row ] && r0=$((top_row + 1))
+
+  # Each line: row offset, column, icon (drawn when typing reaches the
+  # line), text. "|" separates fields; icons use "-" for none.
+  set -- \
+    "0|$((mid_c - 2))|-|PLAY" \
+    "2|$((mid_c - 9))|-|#!/bin/sh INVADERS" \
+    "5|$((mid_c - 10))|-|*SCORE ADVANCE TABLE*" \
+    "7|$((mid_c - 3))|S|= ? MYSTERY" \
+    "9|$((mid_c - 3))|👾|= 30 POINTS" \
+    "11|$((mid_c - 3))|🦀|= 20 POINTS" \
+    "13|$((mid_c - 3))|🐙|= 10 POINTS"
+  left_chars=$((title_t / 2))   # a letter every 2 frames
+  for line in "$@"; do
+    [ $left_chars -le 0 ] && break
+    lr=$((r0 + ${line%%|*})); rest=${line#*|}
+    lc=${rest%%|*}; rest=${rest#*|}
+    icon=${rest%%|*}; text=${rest#*|}
+    case $icon in
+      S) f="$f${ESC}[$lr;$((lc - 5))H${ESC}[31;4m ◜◝ ${ESC}[0m" ;;
+      -) ;;
+      *) f="$f${ESC}[$lr;$((lc - 3))H$icon" ;;
+    esac
+    prefix "$text" $left_chars
+    f="$f${ESC}[$lr;${lc}H$pre"
+    left_chars=$((left_chars - ${#text}))
+  done
+
+  f="$f${ESC}[$((r0 + 16));$((mid_c - 13))HPRESS R TO PLAY, Q TO QUIT"
 }
 
 # ---------------------------------------------------------------------------
@@ -850,11 +947,21 @@ main() {
   while [ $quit -eq 0 ]; do
     read_input
 
-    if [ $game_over -eq 1 ] && [ $restart -eq 1 ]; then
+    if [ $mode = title ]; then
+      title_t=$((title_t + 1))
+      [ $restart -eq 1 ] && new_game
+    elif [ $game_over -eq 1 ] && [ $restart -eq 1 ]; then
       new_game
     elif [ $boom -gt 0 ]; then
       boom=$((boom - 1))
-    elif [ $game_over -eq 0 ]; then
+    elif [ $game_over -eq 1 ]; then
+      # Type "GAME OVER", pause two seconds, then the title screen
+      go_t=$((go_t + 1))
+      if [ $go_t -ge $((9 * go_letter + 104)) ]; then
+        mode=title
+        title_t=0
+      fi
+    else
       if [ $move -lt 0 ] && [ $ship_col -gt $left ]; then
         ship_col=$((ship_col - 1))
       elif [ $move -gt 0 ] && [ $((ship_col + 2)) -lt $right ]; then
