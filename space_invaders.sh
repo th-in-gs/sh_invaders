@@ -142,6 +142,9 @@ layout() {
   # It is drawn " ◜◝ " underlined: a dome over a flat body, in red like the
   # arcade's overlay, 4 columns wide like the arcade's 16 pixels.
   y2row 208; saucer_row=$row
+  # The arcade prints GAME OVER at Y=192-200 (screen address $2D18): between
+  # the saucer's lane and the top of the first wave
+  y2row 196; go_row=$row
   saucer_w=4
   [ $saucer_row -lt $top_row ] && saucer_row=$top_row
   y2row 120; rack_start_row=$row
@@ -1015,11 +1018,22 @@ draw() {
     f="$f${ESC}[$1;$2H$g"
   done
 
-  # "GAME OVER" typed out near the top over the frozen invaders, as in the
-  # arcade, once the explosion has finished
+  # "GAME OVER" typed out over the frozen invaders, as in the arcade, once
+  # the explosion has finished. The arcade's text simply overwrote any
+  # invader pixels; here an invader the letters reach is blanked whole
+  # first, so no half of a two-column emoji is left showing.
   if [ $game_over -eq 1 ] && [ $boom -eq 0 ]; then
     arcade_text "GAME OVER" $((go_t / go_letter))
-    f="$f${ESC}[$top_row;$((left + field_w / 2 - 8))H$sp"
+    gx=$((left + field_w / 2 - 8))
+    if [ -n "$sp" ]; then
+      gend=$((gx + ${#sp} - 1))
+      for inv in $invaders; do
+        ir=${inv%%:*}; t=${inv#*:}; ic=${t%%:*}
+        [ $ir -eq $go_row ] && [ $((ic + 1)) -ge $gx ] && [ $ic -le $gend ] &&
+          f="$f${ESC}[$ir;${ic}H  "
+      done
+    fi
+    f="$f${ESC}[$go_row;${gx}H$sp"
   fi
 
   printf '%s' "$f${ESC}[?2026l"
