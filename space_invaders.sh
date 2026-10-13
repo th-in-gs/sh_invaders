@@ -1030,7 +1030,7 @@ draw() {
   # Invader shots animate as they fall, frame chosen by row, after the
   # arcade's shot sprites:
   #   rolling   { | } |   a spike circling the shaft
-  #   plunger   ┬ ┼ ┴ ┼   a crossbar sliding along the shaft
+  #   plunger   ┴ ┼ ┼ ┬   a crossbar climbing the shaft, then back to the foot
   #   squiggly  \ /       a zig-zag
   for m in $bombs; do
     IFS=:
@@ -1045,8 +1045,8 @@ draw() {
         esac ;;
       p)
         case $(($1 % 4)) in
-          0) g='┬' ;;
-          2) g='┴' ;;
+          0) g='┴' ;;
+          3) g='┬' ;;
           *) g='┼' ;;
         esac ;;
       *)
