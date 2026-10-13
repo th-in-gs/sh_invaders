@@ -840,8 +840,8 @@ draw() {
   # "GAME OVER" typed out near the top over the frozen invaders, as in the
   # arcade, once the explosion has finished
   if [ $game_over -eq 1 ] && [ $boom -eq 0 ]; then
-    prefix "GAME OVER" $((go_t / go_letter))
-    f="$f${ESC}[$((top_row + 1));$((left + field_w / 2 - 4))H$pre"
+    arcade_text "GAME OVER" $((go_t / go_letter))
+    f="$f${ESC}[$((top_row + 1));$((left + field_w / 2 - 8))H$sp"
   fi
 
   printf '%s' "$f${ESC}[?2026l"
@@ -861,6 +861,25 @@ prefix() {
   pre=${1%"$rest"}
 }
 
+# Sets $sp to the first $2 characters of $1, letter-spaced to the arcade's
+# character width: its letters are 8 pixels wide, 2 columns at this scale,
+# so each character is followed by a space (a space becomes two). The first
+# $3 characters (default 0) are left unspaced. A text of n characters with
+# p unspaced is p + 2(n-p) - 1 columns wide.
+arcade_text() {
+  prefix "$1" $2
+  s=$pre
+  prefix "$s" ${3:-0}
+  sp=$pre
+  s=${s#"$pre"}
+  while [ -n "$s" ]; do
+    s_rest=${s#?}
+    sp="$sp${s%"$s_rest"} "
+    s=$s_rest
+  done
+  sp=${sp% }
+}
+
 # Adds the title screen to the frame, after the arcade's attract screen:
 # "PLAY #!/bin/sh INVADERS" and the score advance table, typed out a letter at
 # a time ($title_t counts frames since it appeared). The arcade's "INSERT
@@ -872,33 +891,49 @@ draw_title() {
   r0=$((top_row + 1 + (avail - 17) / 2))
   [ $r0 -le $top_row ] && r0=$((top_row + 1))
 
-  # Each line: row offset, column, icon (drawn when typing reaches the
-  # line), text. "|" separates fields; icons use "-" for none.
+  # Each line: row offset, column ("c" to centre), icon (drawn when typing
+  # reaches the line), number of leading characters to leave unspaced, text.
+  # "|" separates fields; icons use "-" for none. Text is letter-spaced to
+  # the arcade's character width, except "#!/bin/sh" in the game's name.
+  tx=$((mid_c - 7))   # table text column, leaving room for the icons
   set -- \
-    "0|$((mid_c - 2))|-|PLAY" \
-    "2|$((mid_c - 9))|-|#!/bin/sh INVADERS" \
-    "5|$((mid_c - 10))|-|*SCORE ADVANCE TABLE*" \
-    "7|$((mid_c - 3))|S|= ? MYSTERY" \
-    "9|$((mid_c - 3))|👾|= 30 POINTS" \
-    "11|$((mid_c - 3))|🦀|= 20 POINTS" \
-    "13|$((mid_c - 3))|🐙|= 10 POINTS"
-  left_chars=$((title_t / 2))   # a letter every 2 frames
+    "0|c|-|0|PLAY" \
+    "2|c|-|9|#!/bin/sh INVADERS" \
+    "5|c|-|0|*SCORE ADVANCE TABLE*" \
+    "7|$tx|S|0|= ? MYSTERY" \
+    "9|$tx|👾|0|= 30 POINTS" \
+    "11|$tx|🦀|0|= 20 POINTS" \
+    "13|$tx|🐙|0|= 10 POINTS"
+  # Typing advances a column per frame (a spaced letter every 2 frames, an
+  # unspaced one every frame), so the text grows across the screen at a
+  # steady pace, as in the arcade where all letters are the same width.
+  left_cols=$title_t
   for line in "$@"; do
-    [ $left_chars -le 0 ] && break
+    [ $left_cols -le 0 ] && break
     lr=$((r0 + ${line%%|*})); rest=${line#*|}
     lc=${rest%%|*}; rest=${rest#*|}
-    icon=${rest%%|*}; text=${rest#*|}
+    icon=${rest%%|*}; rest=${rest#*|}
+    plain=${rest%%|*}; text=${rest#*|}
+    width=$((plain + 2 * (${#text} - plain) - 1))
+    [ "$lc" = c ] && lc=$((mid_c - width / 2))
     case $icon in
-      S) f="$f${ESC}[$lr;$((lc - 5))H${ESC}[31;4m ◜◝ ${ESC}[0m" ;;
+      S) f="$f${ESC}[$lr;$((lc - 6))H${ESC}[31;4m ◜◝ ${ESC}[0m" ;;
       -) ;;
-      *) f="$f${ESC}[$lr;$((lc - 3))H$icon" ;;
+      *) f="$f${ESC}[$lr;$((lc - 4))H$icon" ;;
     esac
-    prefix "$text" $left_chars
-    f="$f${ESC}[$lr;${lc}H$pre"
-    left_chars=$((left_chars - ${#text}))
+    # Letters shown so far: unspaced ones take 1 column, spaced ones 2
+    if [ $left_cols -le $plain ]; then
+      n=$left_cols
+    else
+      n=$((plain + (left_cols - plain + 1) / 2))
+    fi
+    arcade_text "$text" $n $plain
+    f="$f${ESC}[$lr;${lc}H$sp"
+    left_cols=$((left_cols - plain - 2 * (${#text} - plain)))
   done
 
-  f="$f${ESC}[$((r0 + 16));$((mid_c - 13))HPRESS R TO PLAY, Q TO QUIT"
+  arcade_text "PRESS R TO PLAY, Q TO QUIT" 99
+  f="$f${ESC}[$((r0 + 16));$((mid_c - 25))H$sp"
 }
 
 # ---------------------------------------------------------------------------
