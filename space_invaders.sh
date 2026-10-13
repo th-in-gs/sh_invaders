@@ -18,14 +18,46 @@ field_w=56  # 224 arcade pixels at ~4 pixels per column
 # Terminal setup / teardown
 # ---------------------------------------------------------------------------
 
+# tput is part of ncurses, which minimal systems may lack: fall back to the
+# standard escape sequences for showing/hiding the cursor and switching to
+# and from the alternate screen.
 cleanup() {
   trap - INT TERM HUP
-  tput cnorm 2>/dev/null || true
-  tput rmcup 2>/dev/null || true
+  tput cnorm 2>/dev/null || printf '%s' "${ESC}[?25h"
+  tput rmcup 2>/dev/null || printf '%s' "${ESC}[?1049l"
   if [ -n "${old_stty:-}" ]; then
     stty "$old_stty" 2>/dev/null || stty sane 2>/dev/null || true
   fi
   exit 0
+}
+
+# Sets $rows and $cols to the terminal size, from tput or else stty.
+term_size() {
+  rows=$(tput lines 2>/dev/null) || rows=""
+  cols=$(tput cols 2>/dev/null) || cols=""
+  case "$rows$cols" in
+    ''|*[!0-9]*)
+      set -- $(stty size 2>/dev/null)
+      rows=${1:-}; cols=${2:-} ;;
+  esac
+  case "$rows$cols" in
+    ''|*[!0-9]*)
+      echo "Can't determine the terminal size (no tput or stty size)." >&2
+      exit 1 ;;
+  esac
+}
+
+# The game draws emoji and box/block symbols, which need a UTF-8 locale.
+# Warn (rather than draw garbage) if the locale doesn't look like UTF-8.
+check_locale() {
+  loc=${LC_ALL:-${LC_CTYPE:-${LANG:-}}}
+  case $loc in
+    *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) return ;;
+  esac
+  echo "Your locale (${loc:-unset}) isn't UTF-8, so the game's emoji and" >&2
+  echo "symbols may not display correctly. Try: LANG=en_US.UTF-8 $0" >&2
+  printf 'Press Enter to play anyway, or Ctrl-C to quit. ' >&2
+  read -r _ || exit 1
 }
 
 # Sets $row to the terminal row for arcade height $1 (pixels from the bottom
@@ -35,12 +67,12 @@ y2row() {
 }
 
 init() {
-  rows=$(tput lines)
-  cols=$(tput cols)
+  term_size
   if [ $cols -lt $((field_w + 2)) ] || [ $rows -lt 24 ]; then
     echo "Terminal is ${cols}x${rows}; at least $((field_w + 2))x24 is needed." >&2
     exit 1
   fi
+  check_locale
 
   trap cleanup INT TERM HUP
 
@@ -129,8 +161,19 @@ init() {
   # Non-blocking, unechoed, unbuffered input: reads return immediately
   old_stty=$(stty -g)
   stty -icanon -echo min 0 time 0
-  tput civis 2>/dev/null || true
-  tput smcup 2>/dev/null || true
+  tput civis 2>/dev/null || printf '%s' "${ESC}[?25l"
+  tput smcup 2>/dev/null || printf '%s' "${ESC}[?1049h"
+
+  # Frame pacing (see pace)
+  target_us=19231   # 52 fps: the rate the game's timings are converted to
+  delay_us=12000    # initial sleep per frame, adjusted as the game runs
+  pace_frames=0
+  pace_check=0
+  pace_sec=""       # second at which the current measurement started
+  pace_seen=$(date +%s 2>/dev/null) || pace_seen=""
+  case $pace_seen in
+    ''|*[!0-9]*) pace_seen="" ;;   # no usable clock: keep the initial delay
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -765,6 +808,41 @@ draw() {
 # Main loop
 # ---------------------------------------------------------------------------
 
+# Sleeps between frames, keeping the game at ~52 fps on any machine. Most of
+# a frame is the sleep plus the cost of starting the sleep program, which
+# varies a lot (~6-10ms on macOS, much less on Linux), so the actual frame
+# rate is measured and the delay adjusted to suit. POSIX sh has no
+# sub-second clock, so the rate is measured over 2-second windows that
+# start and end on second boundaries (date +%s, checked every 4th frame).
+pace() {
+  if [ -n "$pace_seen" ]; then
+    pace_frames=$((pace_frames + 1))
+    pace_check=$((pace_check + 1))
+    if [ $pace_check -ge 4 ]; then
+      pace_check=0
+      now=$(date +%s)
+      if [ "$now" != "$pace_seen" ]; then
+        pace_seen=$now
+        if [ -z "$pace_sec" ]; then
+          pace_sec=$now        # first second boundary: start measuring
+          pace_frames=0
+        elif [ $((now - pace_sec)) -ge 2 ]; then
+          frame_us=$(( (now - pace_sec) * 1000000 / pace_frames ))
+          # Correct half the error each time, so noise doesn't make it hunt
+          delay_us=$((delay_us - (frame_us - target_us) / 2))
+          [ $delay_us -lt 0 ] && delay_us=0
+          [ $delay_us -gt 40000 ] && delay_us=40000
+          pace_sec=$now
+          pace_frames=0
+        fi
+      fi
+    fi
+  fi
+  # Format microseconds as 0.dddddd without a subshell (delay is < 1s)
+  d=$((delay_us + 1000000))
+  sleep "0.${d#1}"
+}
+
 main() {
   init
 
@@ -811,9 +889,7 @@ main() {
     fi
 
     draw
-    # Aim for ~50 fps. Frame work is <1ms; the rest is the cost of starting
-    # sleep itself (~6-10ms on macOS), so the delay is set below 0.02.
-    sleep 0.012
+    pace
   done
 
   cleanup
