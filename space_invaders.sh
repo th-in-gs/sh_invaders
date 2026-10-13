@@ -32,9 +32,15 @@ cleanup() {
 }
 
 # Sets $rows and $cols to the terminal size, from tput or else stty.
+# Don't redirect tput's stderr: with it redirected, tput was seen to report
+# a default 80x24 instead of the real size (presumably because, inside
+# $(...), stderr is its only link to the terminal). So check tput exists
+# first, rather than hiding the error when it doesn't.
 term_size() {
-  rows=$(tput lines 2>/dev/null) || rows=""
-  cols=$(tput cols 2>/dev/null) || cols=""
+  rows=""; cols=""
+  if command -v tput >/dev/null 2>&1; then
+    rows=$(tput lines); cols=$(tput cols)
+  fi
   case "$rows$cols" in
     ''|*[!0-9]*)
       set -- $(stty size 2>/dev/null)
