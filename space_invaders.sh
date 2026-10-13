@@ -31,14 +31,24 @@ field_w=56  # 224 arcade pixels at ~4 pixels per column
 # tput is part of ncurses, which minimal systems may lack: fall back to the
 # standard escape sequences for showing/hiding the cursor and switching to
 # and from the alternate screen.
+#
+# cleanup runs from the EXIT trap, so the terminal is restored however the
+# game ends: quitting, a signal, or the shell stopping on an error (set -u).
+# It keeps the exit status, so an error is still reported as one.
 cleanup() {
-  trap - INT TERM HUP
+  rc=$?
+  trap - EXIT INT TERM HUP
   tput cnorm 2>/dev/null || printf '%s' "${ESC}[?25h"
   tput rmcup 2>/dev/null || printf '%s' "${ESC}[?1049l"
   if [ -n "${old_stty:-}" ]; then
     stty "$old_stty" 2>/dev/null || stty sane 2>/dev/null || true
   fi
-  exit 0
+  # A shell error message went to the alternate screen, which has now gone,
+  # so say that something went wrong (signals, 128 and up, are not errors)
+  if [ $rc -ne 0 ] && [ $rc -lt 128 ]; then
+    echo "#!/bin/sh INVADERS stopped with an error (exit status $rc)." >&2
+  fi
+  exit $rc
 }
 
 # Sets $rows and $cols to the terminal size, from tput or else stty.
@@ -88,6 +98,10 @@ rowy() {
 }
 
 init() {
+  if [ ! -t 0 ] || [ ! -t 1 ]; then
+    echo "$0 must be run in a terminal (input and output)." >&2
+    exit 1
+  fi
   term_size
   if [ $cols -lt $((field_w + 2)) ] || [ $rows -lt 24 ]; then
     echo "Terminal is ${cols}x${rows}; at least $((field_w + 2))x24 is needed." >&2
@@ -95,7 +109,6 @@ init() {
   fi
   check_locale
 
-  trap cleanup INT TERM HUP
   # Redo the layout when the window is resized (see handle_resize)
   resized=0
   too_small=0
@@ -207,6 +220,12 @@ init_game() {
   title_t=0
 
   # Non-blocking, unechoed, unbuffered input: reads return immediately
+  # From here the terminal is changed, so make sure it gets restored. Signals
+  # exit with the usual status (128 + signal number), which runs cleanup.
+  trap cleanup EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   old_stty=$(stty -g)
   stty -icanon -echo min 0 time 0
   tput civis 2>/dev/null || printf '%s' "${ESC}[?25l"
@@ -551,12 +570,30 @@ read_input() {
     key=${keys%"$rest"}
     keys=$rest
     if [ "$key" = "$ESC" ]; then
+      # An escape sequence: ESC [ (parameters) final, or ESC O final. Read
+      # the whole sequence, so other keys' sequences (or their modifier
+      # parameters, as in ESC [ 1 ; 5 D) aren't taken as ordinary keys. A
+      # lone ESC is just skipped.
       case $keys in
-        '[D'*|'OD'*) move=-1 ;;
-        '[C'*|'OC'*) move=1 ;;
-        '[A'*|'OA'*) fire=1 ;;
+        '['*|O*)
+          intro=${keys%"${keys#?}"}
+          keys=${keys#?}
+          if [ "$intro" = '[' ]; then
+            while :; do
+              case $keys in
+                [0-9]*|\;*) keys=${keys#?} ;;
+                *) break ;;
+              esac
+            done
+          fi
+          final=${keys%"${keys#?}"}
+          keys=${keys#?}
+          case $final in
+            D) move=-1 ;;   # left arrow
+            C) move=1 ;;    # right arrow
+            A) fire=1 ;;    # up arrow
+          esac ;;
       esac
-      keys=${keys#??}
       continue
     fi
     case $key in
@@ -1231,7 +1268,7 @@ main() {
     pace
   done
 
-  cleanup
+  exit 0   # the EXIT trap restores the terminal
 }
 
 main
