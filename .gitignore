@@ -1,0 +1,32 @@
+# Local scratch space, not part of the project
+/_local/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+.TemporaryItems
+.VolumeIcon.icns
+.DocumentRevisions-V100
+.com.apple.timemachine.donotpresent
+
+# Linux
+*~
+.directory
+.Trash-*
+.fuse_hidden*
+.nfs*
+
+# Editors
+*.swp
+*.swo
+.*.sw?
+\#*\#
+.\#*
+*.bak
+*.orig
+*.tmp
