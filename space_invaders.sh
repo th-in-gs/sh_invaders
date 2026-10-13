@@ -84,8 +84,13 @@ init() {
   y0=$(( (rows - field_h) / 2 ))          # rows above the playfield
   left=$((x0 + 1))
   right=$((x0 + field_w))
-  hud_row=$((y0 + 1))
-  top_row=$((y0 + 2))                     # shots vanish above this
+  hud_row=$((y0 + 1))                     # score headings; values below
+  top_row=$((y0 + 3))                     # shots vanish above this
+  # Score headings, laid out like the arcade's " SCORE<1> HI-SCORE ..."
+  # (this one-player game shows the wave in place of SCORE<2>)
+  sc_x=$((left + 3))
+  hi_x=$((left + field_w / 2 - 4))
+  wv_x=$((right - 7))
 
   y2row 16; ground_row=$row               # the arcade's green line
   ship_row=$((ground_row - 1))
@@ -153,7 +158,10 @@ init() {
   # Braces matter: bash 3.2 can read a multibyte character as part of a name
   while [ $c -lt $field_w ]; do line="${line}─"; c=$((c + 1)); done
   scenery="$scenery${ESC}[0m${ESC}[32m${ESC}[$ground_row;${left}H$line${ESC}[0m"
-  scenery="$scenery${ESC}[$((ground_row + 1));$((left + 7))HMove: h/l or arrows  Fire: SPACE  Quit: q"
+  scenery="$scenery${ESC}[$hud_row;${sc_x}HSCORE<1>${ESC}[$hud_row;${hi_x}HHI-SCORE"
+  scenery="$scenery${ESC}[$hud_row;${wv_x}HWAVE"
+  # Row below the ground: cannons (drawn each frame); then the controls
+  scenery="$scenery${ESC}[$((ground_row + 2));$((left + 7))HMove: h/l or arrows  Fire: SPACE  Quit: q"
 
   quit=0
   go_letter=6  # frames per letter of "GAME OVER" (the arcade waits 7 ticks)
@@ -325,7 +333,29 @@ new_game() {
   plu_idx=0      # positions in the column-firing table
   squ_idx=6
   fire_delay=42  # invaders hold fire for 48 counts at 60 Hz at the start
+  bonus_given=0  # the extra cannon at 1500 points (once per game)
+  bonus_flash=0
   spawn_wave
+}
+
+# As in the arcade (0935-0979), one extra cannon is awarded the first time
+# the score reaches 1500 (the arcade's default; operators could set 1000).
+# The arcade played a sound; here the bell rings and the cannon count
+# flashes.
+check_bonus() {
+  [ $bonus_flash -gt 0 ] && bonus_flash=$((bonus_flash - 1))
+  [ $bonus_given -eq 0 ] && [ $score -ge 1500 ] && [ $game_over -eq 0 ] ||
+    return
+  bonus_given=1
+  lives=$((lives + 1))
+  bell=1
+  bonus_flash=104   # 2 seconds
+}
+
+# Sets $p4 to $1 zero-padded to four digits, as the arcade shows scores.
+pad4() {
+  p4=$1
+  while [ ${#p4} -lt 4 ]; do p4="0$p4"; done
 }
 
 # The ship was hit: lose a life, ring the bell and play the explosion. As in
@@ -726,10 +756,26 @@ draw() {
   f="${ESC}[?2026h${ESC}[H${ESC}[2J$scenery"
   [ $bell -eq 1 ] && { f="$f$BEL"; bell=0; }
 
-  # Lives are shown in reverse video while the ship explodes
-  lives_txt="Lives: $lives"
-  [ $boom -gt 0 ] && lives_txt="${ESC}[7m$lives_txt${ESC}[0m"
-  f="$f${ESC}[$hud_row;${left}HScore: $score  Hi-Score: $hi  $lives_txt  Wave: $wave"
+  # Score values under their headings, zero-padded like the arcade's
+  pad4 $score
+  f="$f${ESC}[$((hud_row + 1));$((sc_x + 2))H$p4"
+  pad4 $hi
+  f="$f${ESC}[$((hud_row + 1));$((hi_x + 2))H$p4"
+  f="$f${ESC}[$((hud_row + 1));$((wv_x + (4 - ${#wave}) / 2))H$wave"
+
+  # Below the ground, as in the arcade: the number of cannons (including
+  # the one in play), then a picture of each spare. The number is in
+  # reverse video while the ship explodes or a cannon has just been won.
+  if [ $mode = play ]; then
+    n_txt=$lives
+    if [ $boom -gt 0 ] || [ $bonus_flash -gt 0 ]; then
+      n_txt="${ESC}[7m$lives${ESC}[0m"
+    fi
+    spares=""
+    i=1
+    while [ $i -lt $lives ]; do spares="$spares ╱▲╲"; i=$((i + 1)); done
+    f="$f${ESC}[$((ground_row + 1));$((left + 1))H$n_txt$spares"
+  fi
 
   if [ $mode = title ]; then
     draw_title
@@ -840,7 +886,7 @@ draw() {
   # arcade, once the explosion has finished
   if [ $game_over -eq 1 ] && [ $boom -eq 0 ]; then
     arcade_text "GAME OVER" $((go_t / go_letter))
-    f="$f${ESC}[$((top_row + 1));$((left + field_w / 2 - 8))H$sp"
+    f="$f${ESC}[$top_row;$((left + field_w / 2 - 8))H$sp"
   fi
 
   printf '%s' "$f${ESC}[?2026l"
@@ -1024,6 +1070,7 @@ main() {
         check_bombs
         update_saucer
       fi
+      check_bonus
       if [ -z "$invaders" ]; then
         wave=$((wave + 1))
         spawn_wave
