@@ -69,7 +69,10 @@ init() {
   # Cells are listed as "row:col:kind" (L/R = rounded top corners).
   # The flying saucer crosses at Y=208. Its timer only runs once the
   # formation is below the first wave's starting height (Y=120).
+  # It is drawn "_⏏_" (dome on a body, in red like the arcade's overlay):
+  # 3 columns, close to the arcade's 16 pixels.
   y2row 208; saucer_row=$row
+  saucer_w=3
   [ $saucer_row -lt $top_row ] && saucer_row=$top_row
   y2row 120; rack_start_row=$row
 
@@ -603,7 +606,7 @@ update_saucer() {
     if [ $((shots % 2)) -eq 1 ]; then
       saucer_x=$left; saucer_dir=1
     else
-      saucer_x=$((right - 1)); saucer_dir=-1
+      saucer_x=$((right - saucer_w + 1)); saucer_dir=-1
     fi
     saucer_tick=0
     return
@@ -613,20 +616,20 @@ update_saucer() {
   [ $saucer_tick -lt 5 ] && return
   saucer_tick=0
   saucer_x=$((saucer_x + saucer_dir))
-  if [ $saucer_x -lt $left ] || [ $((saucer_x + 1)) -gt $right ]; then
+  if [ $saucer_x -lt $left ] || [ $((saucer_x + saucer_w - 1)) -gt $right ]; then
     saucer_x=0
     saucer_pending=0
   fi
 }
 
-# The player's shot hitting the saucer (two columns wide, like the invaders).
+# The player's shot hitting the saucer (any of its $saucer_w columns).
 check_saucer() {
   [ $saucer_x -eq 0 ] && return
   [ $saucer_hit -gt 0 ] && return
   for b in $bullets; do
     bc=${b#*:}
     if [ ${b%:*} -eq $saucer_row ] && [ $bc -ge $saucer_x ] &&
-       [ $bc -le $((saucer_x + 1)) ]; then
+       [ $bc -le $((saucer_x + saucer_w - 1)) ]; then
       bullets=""
       saucer_points
       saucer_hit=83   # 32 ticks of 3 frames at 60 Hz
@@ -692,7 +695,7 @@ draw() {
   # the arcade's top screen overlay)
   if [ $saucer_x -ne 0 ]; then
     if [ $saucer_hit -eq 0 ]; then
-      f="$f${ESC}[$saucer_row;${saucer_x}H🛸"
+      f="$f${ESC}[$saucer_row;${saucer_x}H${ESC}[31m_⏏_${ESC}[0m"
     else
       if [ $saucer_hit -gt 62 ]; then txt='<*>'; else txt=$saucer_pts; fi
       tx=$saucer_x
