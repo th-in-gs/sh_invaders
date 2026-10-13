@@ -129,7 +129,8 @@ init() {
 # Game state
 #   invaders: space-separated "row:col:sprite"
 #   bullets:  the player's shot, "row:col" (at most one, as in the arcade)
-#   bombs:    space-separated "row:col" invader shots (at most three)
+#   bombs:    space-separated "row:col:type" invader shots, at most one of
+#             each type: r (aimed "rolling"), p ("plunger"), s ("squiggly")
 #   sh_ROW_COL: hit points left in each shield cell (2 full, 1 damaged,
 #             unset or 0 gone). POSIX sh has no arrays, hence one variable
 #             per cell, accessed with eval.
@@ -164,7 +165,10 @@ check_shields() {
   done
   remaining=""
   for m in $bombs; do
-    hit_shield ${m%:*} ${m#*:} && continue
+    IFS=:
+    set -- $m
+    unset IFS
+    hit_shield $1 $2 && continue
     remaining="$remaining $m"
   done
   bombs=$remaining
@@ -411,27 +415,49 @@ move_bombs() {
   bomb_tick=0
   moved=""
   for m in $bombs; do
-    mr=$((${m%:*} + 1))
-    [ $mr -lt $ground_row ] && moved="$moved $mr:${m#*:}"
+    IFS=:
+    set -- $m
+    unset IFS
+    mr=$(($1 + 1))
+    [ $mr -lt $ground_row ] && moved="$moved $mr:$2:$3"
   done
   bombs=$moved
 }
 
-# Fires a new invader shot when reloaded and fewer than three are in flight
-# (two when one invader is left: the arcade then disables its "plunger"
-# shot). Every third shot is aimed at the player (the arcade's "rolling"
-# shot); the rest drop from a random column. Shots come from the lowest
-# invader in the chosen column.
+# Fires a new invader shot when reloaded. As in the arcade there are three
+# shot types, taking turns, with at most one of each in flight:
+#   r  "rolling":  aimed at the player
+#   p  "plunger":  random column; disabled when one invader is left
+#   s  "squiggly": random column; survives meeting the player's shot
+# Shots come from the lowest invader in the chosen column.
 drop_bomb() {
   bomb_wait=$((bomb_wait - 1))
   [ $bomb_wait -gt 0 ] && return
   [ -z "$invaders" ] && return
-  max_bombs=3
-  [ $inv_count -eq 1 ] && max_bombs=2
-  set -- $bombs
-  [ $# -ge $max_bombs ] && return
 
-  if [ $bomb_turn -eq 0 ]; then
+  # Next type in turn that isn't already in flight
+  inflight=" "
+  for m in $bombs; do inflight="$inflight${m##*:} "; done
+  bt=""
+  t=0
+  while [ $t -lt 3 ]; do
+    case $bomb_turn in
+      0) cand=r ;;
+      1) cand=p ;;
+      *) cand=s ;;
+    esac
+    bomb_turn=$(( (bomb_turn + 1) % 3 ))
+    t=$((t + 1))
+    [ $cand = p ] && [ $inv_count -eq 1 ] && continue
+    case $inflight in
+      *" $cand "*) continue ;;
+    esac
+    bt=$cand
+    break
+  done
+  [ -z "$bt" ] && return
+
+  if [ $bt = r ]; then
     target=$((ship_col + 1))
   else
     set -- $invaders
@@ -439,7 +465,6 @@ drop_bomb() {
     shift $rnd
     target=${1#*:}; target=${target%%:*}
   fi
-  bomb_turn=$(( (bomb_turn + 1) % 3 ))
 
   # Sprites are two columns wide; fire from whichever half is nearer the
   # target, so an aimed shot can't fall just beside the ship.
@@ -456,17 +481,21 @@ drop_bomb() {
       best=$d; sr=$1; sc=$c
     fi
   done
-  bombs="$bombs $((sr + 1)):$sc"
+  bombs="$bombs $((sr + 1)):$sc:$bt"
   reload_bombs
 }
 
 # Handles invader shots hitting the ship or meeting the player's shot. As in
-# the arcade, when the two shots meet only the player's is destroyed.
+# the arcade, when the two shots meet the player's is destroyed, and so is
+# the invader's unless it is the squiggly shot.
 check_bombs() {
   shot=0
   remaining=""
   for m in $bombs; do
-    mr=${m%:*}; mc=${m#*:}
+    IFS=:
+    set -- $m
+    unset IFS
+    mr=$1; mc=$2; mt=$3
     # The ship's hitbox is its full 3x2 cell box: a shot touching the top of
     # either base triangle counts, not just one landing on it next frame.
     if [ $mr -ge $((ship_row - 1)) ] && [ $mr -le $ship_row ] &&
@@ -474,13 +503,18 @@ check_bombs() {
       shot=1
       continue
     fi
+    met=0
     for b in $bullets; do
       # The shots move toward each other, so they can pass between frames
       br=${b%:*}
       if [ ${b#*:} -eq $mc ] && [ $br -ge $((mr - 1)) ] && [ $br -le $mr ]; then
-        bullets=""
+        met=1
       fi
     done
+    if [ $met -eq 1 ]; then
+      bullets=""
+      [ "$mt" != s ] && continue
+    fi
     remaining="$remaining $m"
   done
   bombs=$remaining
@@ -559,8 +593,17 @@ draw() {
     f="$f${ESC}[${b%:*};${b#*:}H!"
   done
 
+  # The squiggly shot alternates \ and / as it falls, like the arcade's
+  # zig-zag; the others are plain lines
   for m in $bombs; do
-    f="$f${ESC}[${m%:*};${m#*:}H|"
+    IFS=:
+    set -- $m
+    unset IFS
+    g='|'
+    if [ $3 = s ]; then
+      if [ $(($1 % 2)) -eq 0 ]; then g='\'; else g='/'; fi
+    fi
+    f="$f${ESC}[$1;$2H$g"
   done
 
   if [ $game_over -eq 1 ]; then
