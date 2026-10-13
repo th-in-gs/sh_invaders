@@ -190,7 +190,8 @@ layout() {
   scenery="$scenery${ESC}[$hud_row;${sc_x}HSCORE<1>${ESC}[$hud_row;${hi_x}HHI-SCORE"
   scenery="$scenery${ESC}[$hud_row;${wv_x}HWAVE"
   # Row below the ground: cannons (drawn each frame); then the controls
-  scenery="$scenery${ESC}[$((ground_row + 2));$((left + 7))HMove: h/l or arrows  Fire: SPACE  Quit: q"
+  help="MOVE: H/L OR ARROWS   FIRE: SPACE   QUIT: Q"
+  scenery="$scenery${ESC}[$((ground_row + 2));$((left + (field_w - ${#help}) / 2))H$help"
 }
 
 init_game() {
