@@ -9,10 +9,12 @@
 # "Arcade space" is the arcade's own screen: 256 pixels tall, with heights
 # (Y) measured in pixels up from the bottom, as in its ROM. Positions like
 # the shields' Y=48 are given in arcade space and mapped to rows for the
-# current playfield height (y2row). Shots keep their heights in arcade space
-# (in 1/16ths of a pixel), so they move at the arcade's speeds whatever the
-# playfield height; their rows are worked out only to draw them and check
-# for hits.
+# current playfield height (y2row). Shots keep their heights in arcade space,
+# so they move at the arcade's speeds whatever the playfield height; their
+# rows are worked out only to draw them and check for hits.
+#
+# The game runs at 60 frames a second, like the arcade, so the arcade's
+# timings (in frames) are used as they are.
 
 set -u
 set -f  # no globbing when splitting state strings
@@ -79,14 +81,10 @@ y2row() {
   row=$((y0 + field_h - ($1 * field_h + 128) / 256))
 }
 
-# The same for shot heights, which are arcade-space heights in 1/16ths of
-# a pixel (see shot_speed). Sets $yr to the row for height $1.
-yrow() {
-  yr=$((y0 + field_h - ($1 * field_h + 2047) / 4096))
-}
-# Sets $ry to the shot height (1/16ths of a pixel) of the middle of row $1.
+# Sets $ry to an arcade-space height (in pixels) within row $1, chosen so
+# that y2row gives back the same row. Used to start shots off.
 rowy() {
-  ry=$(( ((y0 + field_h - $1) * 4096 + 2048) / field_h ))
+  ry=$(( ((y0 + field_h - $1) * 256 + 127) / field_h ))
 }
 
 init() {
@@ -164,16 +162,11 @@ layout() {
     done
   done
 
-  # Shots move in arcade space (see the top of the file): each keeps its
-  # height in 1/16ths of a pixel, converted to a row only to draw it and
-  # check for hits, so its speed is exact at any playfield height. Per frame
-  # at ~52 fps:
-  #   player shot:   240 px/s (4 px/frame at 60 Hz)  -> 74/16 px
-  #   invader shots: 80 px/s                         -> 25/16 px
-  #                  100 px/s, 8 or fewer invaders   -> 31/16 px
-  shot_speed=74
-  bomb_speed_slow=25
-  bomb_speed_fast=31
+  # Shots move in arcade space (see the top of the file) at the arcade's
+  # speeds: the player's shot 4 pixels a frame; invader shots 4 pixels a
+  # step, each type stepping on its own frame of three (5 pixels once 8 or
+  # fewer invaders are left: the arcade's SpeedShots)
+  shot_speed=4
 
   # Invader formation: 11 x 5, rows 16 arcade pixels apart, columns 4 apart
   inv_rows=5
@@ -202,7 +195,7 @@ layout() {
 
 init_game() {
   quit=0
-  go_letter=6  # frames per letter of "GAME OVER" (the arcade waits 7 ticks)
+  go_letter=7  # frames per letter of "GAME OVER", as in the arcade
   load_hiscore
   new_game     # sets up a game (so the score line has something to show) ...
   mode=title   # ... but start on the title screen, like the arcade
@@ -215,8 +208,8 @@ init_game() {
   tput smcup 2>/dev/null || printf '%s' "${ESC}[?1049h"
 
   # Frame pacing (see pace)
-  target_us=19231   # 52 fps: the rate the game's timings are converted to
-  delay_us=12000    # initial sleep per frame, adjusted as the game runs
+  target_us=16667   # 60 fps, the arcade's rate
+  delay_us=9000     # initial sleep per frame, adjusted as the game runs
   pace_frames=0
   pace_check=0
   pace_sec=""       # second at which the current measurement started
@@ -277,9 +270,9 @@ handle_resize() {
   # the new layout; any now outside the playfield are dropped
   moved=""
   for b in $bullets; do
-    yrow $bullet_y
-    [ $yr -ge $top_row ] && [ $yr -lt $ship_row ] &&
-      moved="$yr:$((${b#*:} + dx))"
+    y2row $bullet_y
+    [ $row -ge $top_row ] && [ $row -lt $ship_row ] &&
+      moved="$row:$((${b#*:} + dx))"
   done
   bullets=$moved
   moved=""
@@ -287,9 +280,9 @@ handle_resize() {
     IFS=:
     set -- $m
     unset IFS
-    yrow $5
-    [ $yr -ge $top_row ] && [ $yr -lt $ground_row ] &&
-      moved="$moved $yr:$(($2 + dx)):$3:$4:$5"
+    y2row $5
+    [ $row -ge $top_row ] && [ $row -lt $ground_row ] &&
+      moved="$moved $row:$(($2 + dx)):$3:$4:$5"
   done
   bombs=$moved
 
@@ -320,8 +313,8 @@ handle_resize() {
 #   invaders: space-separated "row:col:sprite"
 #   bullets:  the player's shot, "row:col" (at most one, as in the arcade);
 #             its height in arcade space is in $bullet_y
-#   bombs:    space-separated "row:col:type:age:height" invader shots
-#             (height in arcade space, in 1/16ths of a pixel), at most one of
+#   bombs:    space-separated "row:col:type:steps:height" invader shots
+#             (height in arcade space), at most one of
 #             each type: r (aimed "rolling"), p ("plunger"), s ("squiggly")
 #   sh_ROW_COL: hit points left in each shield cell (2 full, 1 damaged,
 #             unset or 0 gone). POSIX sh has no arrays, hence one variable
@@ -366,15 +359,14 @@ check_shields() {
   bombs=$remaining
 }
 
-# Sets $reload: how long (in frames) every falling invader shot must have
-# been falling before another may be fired. The arcade's table at 1AA1, by
-# score: 48/16/11/8/7 shot steps of 3 frames at 60 Hz, converted to ~52 fps.
+# Sets $reload: how many steps every falling invader shot must have made
+# before another may be fired. The arcade's table at 1AA1, by score.
 reload_bombs() {
-  if [ $score -lt 200 ]; then reload=125
-  elif [ $score -lt 1000 ]; then reload=42
-  elif [ $score -lt 2000 ]; then reload=29
-  elif [ $score -lt 3000 ]; then reload=21
-  else reload=18
+  if [ $score -lt 200 ]; then reload=48
+  elif [ $score -lt 1000 ]; then reload=16
+  elif [ $score -lt 2000 ]; then reload=11
+  elif [ $score -lt 3000 ]; then reload=8
+  else reload=7
   fi
 }
 
@@ -435,7 +427,8 @@ spawn_wave() {
   reset_shields
   bullets=""
   bombs=""
-  shot_turn=0
+  bomb_tick=0   # which invader shot type's turn it is (see move_bombs)
+  turn=r
   rack_x=$inv_start_col  # screen column of the formation's column 1
   rack_y=$bottom         # screen row of the formation's bottom row
   saucer_x=0             # no saucer on screen
@@ -455,11 +448,11 @@ new_game() {
   bell=0   # ring the terminal bell on the next draw
   ship_col=$((left + field_w / 2 - 2))
   shots=0               # player shots fired (sets saucer direction and score)
-  saucer_timer=1331     # 1536 frames at 60 Hz between saucers
+  saucer_timer=1536     # frames between saucers
   saucer_pending=0
   plu_idx=0      # positions in the column-firing table
   squ_idx=6
-  fire_delay=42  # invaders hold fire for 48 counts at 60 Hz at the start
+  fire_delay=48  # invaders hold fire for 48 frames at the start
   bonus_given=0  # the extra cannon at 1500 points (once per game)
   bonus_flash=0
   spawn_wave
@@ -476,7 +469,7 @@ check_bonus() {
   bonus_given=1
   lives=$((lives + 1))
   bell=1
-  bonus_flash=104   # 2 seconds
+  bonus_flash=120   # 2 seconds
 }
 
 # Sets $p4 to $1 zero-padded to four digits, as the arcade shows scores.
@@ -491,10 +484,10 @@ pad4() {
 player_hit() {
   lives=$((lives - 1))
   bell=1
-  boom=30
+  boom=60        # the arcade's 12 explosion pictures, 5 frames each
   bullets=""
   bombs=""
-  fire_delay=42  # as at the start, the invaders hold fire for a while
+  fire_delay=48  # as at the start, the invaders hold fire for a while
   [ $lives -le 0 ] && end_game
 }
 
@@ -571,13 +564,13 @@ read_input() {
   done
 }
 
-# The player's shot climbs $shot_speed each frame in arcade space.
+# The player's shot climbs $shot_speed pixels each frame in arcade space.
 move_bullets() {
   moved=""
   for b in $bullets; do
     bullet_y=$((bullet_y + shot_speed))
-    yrow $bullet_y
-    [ $yr -ge $top_row ] && moved="$yr:${b#*:}"
+    y2row $bullet_y
+    [ $row -ge $top_row ] && moved="$row:${b#*:}"
   done
   bullets=$moved
 }
@@ -617,11 +610,16 @@ check_collisions() {
 move_invaders() {
   landed=0
   # The arcade moves one invader 2 pixels per frame, so the whole formation
-  # steps one column (~4 pixels) every 2 x invaders frames at 60 Hz: about
-  # 1.75 x invaders frames here. The last invader moves 3 pixels per frame,
-  # so it steps every frame.
+  # steps one column (4 pixels) every 2 x invaders frames. The last invader
+  # moves 3 pixels per frame; the nearest whole number of frames per column
+  # is 1.
   inv_tick=$((inv_tick + 1))
-  [ $inv_tick -lt $((inv_count * 7 / 4)) ] && return 1
+  if [ $inv_count -eq 1 ]; then
+    inv_delay=1
+  else
+    inv_delay=$((inv_count * 2))
+  fi
+  [ $inv_tick -lt $inv_delay ] && return 1
   inv_tick=0
 
   min_col=$cols
@@ -661,38 +659,48 @@ move_invaders() {
   return 0
 }
 
-# Invader shots fall $bomb_speed_slow each frame in arcade space, or
-# $bomb_speed_fast once 8 or fewer invaders are left (the arcade's
-# SpeedShots). Each shot also counts its age in frames (the arcade's step
-# count, used for reloading).
+# Invader shots step down 4 pixels in arcade space, or 5 once 8 or fewer
+# invaders are left (the arcade's SpeedShots). As in the arcade, the three
+# types take turns: each frame one of them steps (squiggly, then plunger,
+# then rolling, as the arcade's timer counts down 2, 1, 0), so each steps
+# every third frame. Shots count their steps, which the reload rule uses.
 move_bombs() {
+  bomb_tick=$(( (bomb_tick + 2) % 3 ))
+  case $bomb_tick in
+    0) turn=r ;;
+    1) turn=p ;;
+    *) turn=s ;;
+  esac
   [ -z "$bombs" ] && return
-  speed=$bomb_speed_slow
-  [ $inv_count -le 8 ] && speed=$bomb_speed_fast
+  step=4
+  [ $inv_count -le 8 ] && step=5
   moved=""
   for m in $bombs; do
     IFS=:
     set -- $m
     unset IFS
-    h=$(($5 - speed))
-    yrow $h
-    [ $yr -lt $ground_row ] && moved="$moved $yr:$2:$3:$(($4 + 1)):$h"
+    if [ $3 = $turn ]; then
+      h=$(($5 - step))
+      y2row $h
+      [ $row -lt $ground_row ] && moved="$moved $row:$2:$3:$(($4 + 1)):$h"
+    else
+      moved="$moved $m"
+    fi
   done
   bombs=$moved
 }
 
 # Invader firing, following the arcade's code (0476-0643). There are three
-# shot types, at most one of each in flight, and each gets a chance to fire
-# on its own frame in turn:
+# shot types, at most one of each in flight. On its turn (see move_bombs) a
+# type that isn't falling gets a chance to fire:
 #   r  "rolling":  from the column directly over the player
 #   p  "plunger":  from columns in the table's order; disabled when one
 #                  invader is left
 #   s  "squiggly": from columns in the table's order; survives meeting the
 #                  player's shot
-# A shot may only be fired if every shot already falling has been falling
-# for longer than $reload. It comes from the lowest invader in its column;
-# if that column has none left, no shot is fired (but the table still
-# advances).
+# A shot may only be fired if every shot already falling has made more than
+# $reload steps. It comes from the lowest invader in its column; if that
+# column has none left, no shot is fired (but the table still advances).
 drop_bomb() {
   if [ $fire_delay -gt 0 ]; then
     fire_delay=$((fire_delay - 1))
@@ -700,12 +708,7 @@ drop_bomb() {
   fi
   [ -z "$invaders" ] && return
 
-  shot_turn=$(( (shot_turn + 1) % 3 ))
-  case $shot_turn in
-    0) bt=r ;;
-    1) bt=p ;;
-    *) bt=s ;;
-  esac
+  bt=$turn
   [ $bt = p ] && [ $inv_count -eq 1 ] && return
   # The saucer uses the squiggly shot's slot in the arcade
   [ $bt = s ] && [ $saucer_x -ne 0 ] && return
@@ -716,7 +719,7 @@ drop_bomb() {
     set -- $m
     unset IFS
     [ $3 = $bt ] && return          # this type is already in flight
-    [ $4 -le $reload ] && return    # another shot was fired too recently
+    [ $4 -le $reload ] && return    # another shot hasn't gone far enough
   done
 
   case $bt in
@@ -751,8 +754,9 @@ drop_bomb() {
   # half is nearer the player, the others from the left half
   sc=$colx
   [ $bt = r ] && [ $((ship_col + 1)) -gt $colx ] && sc=$((colx + 1))
+  # A new shot starts below the invader, with 1 step made (as in the arcade)
   rowy $((sr + 1))
-  bombs="$bombs $((sr + 1)):$sc:$bt:0:$ry"
+  bombs="$bombs $((sr + 1)):$sc:$bt:1:$ry"
 }
 
 # Handles invader shots hitting the ship or meeting the player's shot. As in
@@ -804,17 +808,17 @@ saucer_points() {
 }
 
 # Starts, moves and retires the saucer.
-#  - A saucer is due every 1536 frames at 60 Hz, counted only once the
+#  - A saucer is due every 1536 frames, counted only once the
 #    formation is below the first wave's starting height.
 #  - It sets off when due, with 8 or more invaders left and no squiggly shot
 #    falling (it shares the squiggly shot's slot).
 #  - An odd number of shots fired sends it left to right, even right to left.
-#  - It moves about 40 pixels a second (a column every 5 frames).
+#  - It moves 2 pixels every third frame, as in the arcade (a column every 6).
 update_saucer() {
   if [ $rack_y -gt $rack_start_row ]; then
     saucer_timer=$((saucer_timer - 1))
     if [ $saucer_timer -le 0 ]; then
-      saucer_timer=1331
+      saucer_timer=1536
       saucer_pending=1
     fi
   fi
@@ -822,7 +826,7 @@ update_saucer() {
   # Hit: explosion, then the score in its place; points added as it shows
   if [ $saucer_hit -gt 0 ]; then
     saucer_hit=$((saucer_hit - 1))
-    [ $saucer_hit -eq 62 ] && score=$((score + saucer_pts))
+    [ $saucer_hit -eq 72 ] && score=$((score + saucer_pts))
     if [ $saucer_hit -eq 0 ]; then
       saucer_x=0
       saucer_pending=0
@@ -845,7 +849,7 @@ update_saucer() {
   fi
 
   saucer_tick=$((saucer_tick + 1))
-  [ $saucer_tick -lt 5 ] && return
+  [ $saucer_tick -lt 6 ] && return
   saucer_tick=0
   saucer_x=$((saucer_x + saucer_dir))
   if [ $saucer_x -lt $left ] || [ $((saucer_x + saucer_w - 1)) -gt $right ]; then
@@ -864,7 +868,7 @@ check_saucer() {
        [ $bc -le $((saucer_x + saucer_w - 1)) ]; then
       bullets=""
       saucer_points
-      saucer_hit=83   # 32 ticks of 3 frames at 60 Hz
+      saucer_hit=96   # the arcade's 32 ticks of 3 frames
     fi
   done
 }
@@ -910,8 +914,8 @@ draw() {
   fi
 
   if [ $boom -gt 0 ]; then
-    # Two-frame explosion, alternating every 4 frames like the arcade's
-    if [ $((boom / 4 % 2)) -eq 0 ]; then
+    # Two-frame explosion, changing every 5 frames like the arcade's
+    if [ $((boom / 5 % 2)) -eq 0 ]; then
       f="$f${ESC}[$ship_row;${ship_col}H\\|/"
     else
       f="$f${ESC}[$ship_row;${ship_col}H*.*"
@@ -955,7 +959,7 @@ draw() {
     if [ $saucer_hit -eq 0 ]; then
       f="$f${ESC}[$saucer_row;${saucer_x}H${ESC}[31;4m ◜◝ ${ESC}[0m"
     else
-      if [ $saucer_hit -gt 62 ]; then txt='<*>'; else txt=$saucer_pts; fi
+      if [ $saucer_hit -gt 72 ]; then txt='<*>'; else txt=$saucer_pts; fi
       tx=$saucer_x
       [ $((tx + ${#txt} - 1)) -gt $right ] && tx=$((right - ${#txt} + 1))
       f="$f${ESC}[$saucer_row;${tx}H${ESC}[31m$txt${ESC}[0m"
@@ -1111,7 +1115,7 @@ draw_title() {
 # Main loop
 # ---------------------------------------------------------------------------
 
-# Sleeps between frames, keeping the game at ~52 fps on any machine. Most of
+# Sleeps between frames, keeping the game at 60 fps on any machine. Most of
 # a frame is the sleep, and a sleep takes longer than requested: measured on
 # a Mac running macOS 27, ~1.6ms to start the sleep program plus ~3-4ms of
 # oversleep. Other systems will differ, so the actual frame rate is measured
@@ -1166,7 +1170,7 @@ main() {
     elif [ $game_over -eq 1 ]; then
       # Type "GAME OVER", pause two seconds, then the title screen
       go_t=$((go_t + 1))
-      if [ $go_t -ge $((9 * go_letter + 104)) ]; then
+      if [ $go_t -ge $((9 * go_letter + 120)) ]; then
         mode=title
         title_t=0
       fi
