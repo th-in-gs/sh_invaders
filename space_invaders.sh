@@ -5,6 +5,14 @@
 # Geometry and timings follow the 1978 arcade game (224x256 pixel screen),
 # scaled so that one terminal column is ~4 pixels: the playfield is a fixed
 # 56 columns wide, centred in the terminal, and up to 32 rows tall.
+#
+# "Arcade space" is the arcade's own screen: 256 pixels tall, with heights
+# (Y) measured in pixels up from the bottom, as in its ROM. Positions like
+# the shields' Y=48 are given in arcade space and mapped to rows for the
+# current playfield height (y2row). Shots keep their heights in arcade space
+# (in 1/16ths of a pixel), so they move at the arcade's speeds whatever the
+# playfield height; their rows are worked out only to draw them and check
+# for hits.
 
 set -u
 set -f  # no globbing when splitting state strings
@@ -66,10 +74,19 @@ check_locale() {
   read -r _ || exit 1
 }
 
-# Sets $row to the terminal row for arcade height $1 (pixels from the bottom
-# of the 256-pixel-tall arcade screen).
+# Sets $row to the terminal row for arcade-space height $1 (in pixels).
 y2row() {
   row=$((y0 + field_h - ($1 * field_h + 128) / 256))
+}
+
+# The same for shot heights, which are arcade-space heights in 1/16ths of
+# a pixel (see shot_speed). Sets $yr to the row for height $1.
+yrow() {
+  yr=$((y0 + field_h - ($1 * field_h + 2047) / 4096))
+}
+# Sets $ry to the shot height (1/16ths of a pixel) of the middle of row $1.
+rowy() {
+  ry=$(( ((y0 + field_h - $1) * 4096 + 2048) / field_h ))
 }
 
 init() {
@@ -147,14 +164,16 @@ layout() {
     done
   done
 
-  # Arcade timings (60 Hz) converted to frames at this game's ~52 fps and to
-  # rows at this playfield height (256 / field_h pixels per row).
-  #   player shot:   4 px/frame (240 px/s)
-  #   invader shots: 80 px/s, or 100 px/s with 8 or fewer invaders left
-  shot_period=$(( (55 + field_h / 2) / field_h ))
-  [ $shot_period -lt 1 ] && shot_period=1
-  bomb_period_slow=$(( (166 + field_h / 2) / field_h ))
-  bomb_period_fast=$(( (133 + field_h / 2) / field_h ))
+  # Shots move in arcade space (see the top of the file): each keeps its
+  # height in 1/16ths of a pixel, converted to a row only to draw it and
+  # check for hits, so its speed is exact at any playfield height. Per frame
+  # at ~52 fps:
+  #   player shot:   240 px/s (4 px/frame at 60 Hz)  -> 74/16 px
+  #   invader shots: 80 px/s                         -> 25/16 px
+  #                  100 px/s, 8 or fewer invaders   -> 31/16 px
+  shot_speed=74
+  bomb_speed_slow=25
+  bomb_speed_fast=31
 
   # Invader formation: 11 x 5, rows 16 arcade pixels apart, columns 4 apart
   inv_rows=5
@@ -209,7 +228,7 @@ init_game() {
 
 # Sets $nr to the new layout's row for row $1 of the old layout. If the
 # playfield's height hasn't changed it just moves; otherwise the row is
-# converted to an arcade height and back, which can round by a row.
+# converted to an arcade-space height and back, which can round by a row.
 remap_row() {
   if [ $field_h -eq $o_h ]; then
     nr=$(($1 + y0 - o_y0))
@@ -254,19 +273,23 @@ handle_resize() {
   done
   invaders=$moved
 
-  # Shots move too; any now outside the playfield are dropped
+  # Shots keep their heights in arcade space, so they just get their rows in
+  # the new layout; any now outside the playfield are dropped
   moved=""
   for b in $bullets; do
-    remap_row ${b%:*}
-    [ $nr -ge $top_row ] && [ $nr -lt $ship_row ] &&
-      moved="$moved $nr:$((${b#*:} + dx))"
+    yrow $bullet_y
+    [ $yr -ge $top_row ] && [ $yr -lt $ship_row ] &&
+      moved="$yr:$((${b#*:} + dx))"
   done
   bullets=$moved
   moved=""
   for m in $bombs; do
-    remap_row ${m%%:*}; t=${m#*:}
-    [ $nr -ge $top_row ] && [ $nr -lt $ground_row ] &&
-      moved="$moved $nr:$((${t%%:*} + dx)):${t#*:}"
+    IFS=:
+    set -- $m
+    unset IFS
+    yrow $5
+    [ $yr -ge $top_row ] && [ $yr -lt $ground_row ] &&
+      moved="$moved $yr:$(($2 + dx)):$3:$4:$5"
   done
   bombs=$moved
 
@@ -295,8 +318,10 @@ handle_resize() {
 # ---------------------------------------------------------------------------
 # Game state
 #   invaders: space-separated "row:col:sprite"
-#   bullets:  the player's shot, "row:col" (at most one, as in the arcade)
-#   bombs:    space-separated "row:col:type" invader shots, at most one of
+#   bullets:  the player's shot, "row:col" (at most one, as in the arcade);
+#             its height in arcade space is in $bullet_y
+#   bombs:    space-separated "row:col:type:age:height" invader shots
+#             (height in arcade space, in 1/16ths of a pixel), at most one of
 #             each type: r (aimed "rolling"), p ("plunger"), s ("squiggly")
 #   sh_ROW_COL: hit points left in each shield cell (2 full, 1 damaged,
 #             unset or 0 gone). POSIX sh has no arrays, hence one variable
@@ -410,8 +435,6 @@ spawn_wave() {
   reset_shields
   bullets=""
   bombs=""
-  shot_tick=0
-  bomb_tick=0
   shot_turn=0
   rack_x=$inv_start_col  # screen column of the formation's column 1
   rack_y=$bottom         # screen row of the formation's bottom row
@@ -548,15 +571,13 @@ read_input() {
   done
 }
 
-# The player's shot climbs one row every $shot_period frames.
+# The player's shot climbs $shot_speed each frame in arcade space.
 move_bullets() {
-  shot_tick=$((shot_tick + 1))
-  [ $shot_tick -lt $shot_period ] && return
-  shot_tick=0
   moved=""
   for b in $bullets; do
-    br=$((${b%:*} - 1))
-    [ $br -ge $top_row ] && moved="$moved $br:${b#*:}"
+    bullet_y=$((bullet_y + shot_speed))
+    yrow $bullet_y
+    [ $yr -ge $top_row ] && moved="$yr:${b#*:}"
   done
   bullets=$moved
 }
@@ -640,26 +661,22 @@ move_invaders() {
   return 0
 }
 
-# Invader shots fall one row every $bomb_period_slow frames, or every
-# $bomb_period_fast frames once 8 or fewer invaders are left. Each shot also
-# counts its age in frames (the arcade's step count, used for reloading).
+# Invader shots fall $bomb_speed_slow each frame in arcade space, or
+# $bomb_speed_fast once 8 or fewer invaders are left (the arcade's
+# SpeedShots). Each shot also counts its age in frames (the arcade's step
+# count, used for reloading).
 move_bombs() {
   [ -z "$bombs" ] && return
-  bomb_tick=$((bomb_tick + 1))
-  period=$bomb_period_slow
-  [ $inv_count -le 8 ] && period=$bomb_period_fast
-  step=0
-  if [ $bomb_tick -ge $period ]; then
-    step=1
-    bomb_tick=0
-  fi
+  speed=$bomb_speed_slow
+  [ $inv_count -le 8 ] && speed=$bomb_speed_fast
   moved=""
   for m in $bombs; do
     IFS=:
     set -- $m
     unset IFS
-    mr=$(($1 + step))
-    [ $mr -lt $ground_row ] && moved="$moved $mr:$2:$3:$(($4 + 1))"
+    h=$(($5 - speed))
+    yrow $h
+    [ $yr -lt $ground_row ] && moved="$moved $yr:$2:$3:$(($4 + 1)):$h"
   done
   bombs=$moved
 }
@@ -734,7 +751,8 @@ drop_bomb() {
   # half is nearer the player, the others from the left half
   sc=$colx
   [ $bt = r ] && [ $((ship_col + 1)) -gt $colx ] && sc=$((colx + 1))
-  bombs="$bombs $((sr + 1)):$sc:$bt:0"
+  rowy $((sr + 1))
+  bombs="$bombs $((sr + 1)):$sc:$bt:0:$ry"
 }
 
 # Handles invader shots hitting the ship or meeting the player's shot. As in
@@ -1161,8 +1179,8 @@ main() {
       # One shot on screen at a time, as in the arcade
       if [ $fire -eq 1 ] && [ -z "$bullets" ]; then
         bullets="$((ship_row - 1)):$((ship_col + 1))"
+        rowy $((ship_row - 1)); bullet_y=$ry
         shots=$((shots + 1))
-        shot_tick=0
       fi
 
       move_bullets
