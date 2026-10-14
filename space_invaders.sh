@@ -140,9 +140,11 @@ layout() {
 
   y2row 16; ground_row=$row               # the arcade's green line
   ship_row=$((ground_row - 1))
-  # The arcade ends the game when the formation reaches Y=40 (just above
-  # the cannon's top)
-  y2row 40; land_row=$row
+  # The arcade ends the game when an invader goes below Y=40 (016B), just
+  # above the cannon's top: the game ends when an invader reaches the row
+  # below the one holding Y=40. On shorter playfields that can be the
+  # cannon's row, so it's kept at least a row above it.
+  y2row 40; land_row=$((row + 1))
   [ $land_row -gt $((ship_row - 1)) ] && land_row=$((ship_row - 1))
 
   # Shields: four 22x16-pixel arches with a notch underneath, bases at Y=48,
