@@ -208,6 +208,7 @@ layout() {
   while [ $c -lt $field_w ]; do line="${line}─"; c=$((c + 1)); done
   ground_full="${ESC}[32m${ESC}[$ground_row;${left}H$line${ESC}[0m"
   ground_dirty=1
+  redraw_all=1   # a new layout: clear the screen and draw it afresh
   scenery="$scenery${ESC}[$hud_row;${sc_x}HSCORE${ESC}[$hud_row;${hi_x}HHI-SCORE"
   scenery="$scenery${ESC}[$hud_row;${wv_x}HWAVE"
   # Row below the ground: cannons (drawn each frame); then the controls
@@ -589,6 +590,7 @@ spawn_wave() {
 # Starts a new game (at launch, and on 'r' after game over).
 new_game() {
   mode=play
+  redraw_all=1
   score=0
   lives=3
   wave=1
@@ -1119,23 +1121,62 @@ check_saucer() {
 # ---------------------------------------------------------------------------
 # Rendering: build the whole frame in a string, then emit it in one go
 # (wrapped in synchronized-output escapes where the terminal supports them).
+#
+# The screen isn't cleared each frame: where the terminal doesn't support
+# synchronized output (Terminal.app, for one), it can show the screen
+# part-drawn, and a cleared one flickers. Instead the frame is drawn over
+# the last one:
+#  - Things that move (the cannon, shots, explosions, the saucer) are
+#    tracked: each frame blanks just the cells that something covered last
+#    frame and nothing covers now.
+#  - Layers that change only now and then (the score, the ground, the
+#    shields, the formation) are sent only when they change, or when
+#    something that moved has left a mark on them.
+# The screen is only cleared and drawn afresh when $redraw_all is set: at
+# startup, on a resize, for a new game, and back at the title screen.
 # ---------------------------------------------------------------------------
+
+# Adds $4 to the frame at row $1, column $2, $3 columns wide, and records
+# the cells it covers ($items lists "row;col;width", $cov " row;col " per
+# cell).
+put() {
+  f="$f${ESC}[$1;$2H$4"
+  items="$items $1;$2;$3"
+  pc=0
+  while [ $pc -lt $3 ]; do
+    cov="$cov $1;$(($2 + pc)) "
+    pc=$((pc + 1))
+  done
+}
 
 draw() {
   if [ $too_small -eq 1 ]; then
     printf '%s' "${ESC}[?2026h${ESC}[H${ESC}[2JWindow too small: ${cols}x${rows}, need at least $((field_w + 2))x24. Paused (q quits).${ESC}[?2026l"
     return
   fi
-  f="${ESC}[?2026h${ESC}[H${ESC}[2J$scenery"
-  [ $bell -eq 1 ] && { f="$f$BEL"; bell=0; }
+  if [ $redraw_all -eq 1 ]; then
+    head="${ESC}[?2026h${ESC}[H${ESC}[2J$scenery"
+    prev_items=""
+    # Nothing has been sent onto the cleared screen yet
+    sent_hud="" sent_ground="" sent_shields="" sent_inv="" sent_inv_cov=""
+    redraw_all=0
+  else
+    head="${ESC}[?2026h"
+  fi
+  f="" items="" cov="" layers=""
+  [ $bell -eq 1 ] && { head="$head$BEL"; bell=0; }
 
   # Score values under their headings, zero-padded like the arcade's
   pad4 $score
-  f="$f${ESC}[$((hud_row + 1));${sc_x}H$p4"
+  hud="${ESC}[$((hud_row + 1));${sc_x}H$p4"
   pad4 $hi
-  f="$f${ESC}[$((hud_row + 1));$((hi_x + 2))H$p4"
+  hud="$hud${ESC}[$((hud_row + 1));$((hi_x + 2))H$p4"
   # Right-justified under WAVE, mirroring the score under SCORE
-  f="$f${ESC}[$((hud_row + 1));$((wv_x + 4 - ${#wave}))H$wave"
+  hud="$hud${ESC}[$((hud_row + 1));$((wv_x + 4 - ${#wave}))H$wave"
+  if [ "$hud" != "$sent_hud" ]; then
+    layers="$layers$hud"
+    sent_hud=$hud
+  fi
 
   # Below the ground, as in the arcade: the number of cannons (including
   # the one in play), then a picture of each spare. The number is in
@@ -1148,13 +1189,14 @@ draw() {
     spares=""
     i=1
     while [ $i -lt $lives ]; do spares="$spares ╱▲╲"; i=$((i + 1)); done
-    f="$f${ESC}[$((ground_row + 1));$((left + 1))H$n_txt$spares"
+    put $((ground_row + 1)) $((left + 1)) $((${#lives} + 4 * (lives - 1))) \
+      "$n_txt$spares"
   fi
 
   # The ground line, worn by invader shots blowing up on it: each column
   # shows its 4 pixels as best it can. Re-rendered only when it changes.
   if [ $mode = title ]; then
-    f="$f$ground_full"
+    layers="$layers$ground_full"
   else
     if [ $ground_dirty -eq 1 ]; then
       ground_frame="${ESC}[32m${ESC}[$ground_row;${left}H"
@@ -1174,40 +1216,44 @@ draw() {
       ground_frame="${ground_frame}${ESC}[0m"
       ground_dirty=0
     fi
-    f="$f$ground_frame"
+    if [ "$ground_frame" != "$sent_ground" ]; then
+      layers="$layers$ground_frame"
+      sent_ground=$ground_frame
+    fi
   fi
 
+  # The title screen only grows as it types out, so needs no tracking
   if [ $mode = title ]; then
     draw_title
-    printf '%s' "$f${ESC}[?2026l"
+    printf '%s' "$head$layers$f${ESC}[?2026l"
     return
   fi
 
   if [ $boom -gt 0 ]; then
     # Two-frame explosion, changing every 5 frames like the arcade's
     if [ $((boom / 5 % 2)) -eq 0 ]; then
-      f="$f${ESC}[$ship_row;${ship_col}H\\|/"
+      put $ship_row $ship_col 3 '\|/'
     else
-      f="$f${ESC}[$ship_row;${ship_col}H*.*"
+      put $ship_row $ship_col 3 '*.*'
     fi
   elif [ $game_over -eq 0 ]; then   # the last cannon stays destroyed
     # One row, like the arcade's: sloping shoulders with a solid point.
     # These characters are in SF Mono (Terminal.app's default font), so
     # nothing is borrowed from another font.
-    f="$f${ESC}[$ship_row;${ship_col}H╱▲╲"
+    put $ship_row $ship_col 3 '╱▲╲'
   fi
 
   # Shields (green, like the arcade's screen overlay) change only when hit,
-  # so they are re-rendered only then
+  # so they are re-rendered only then. Cells shot away are drawn blank.
   if [ $shields_dirty -eq 1 ]; then
-    shield_frame="${ESC}[32m"
+    shield_frame="${ESC}[32m" shield_cov=""
     for s in $shield_cells; do
       IFS=:
       set -- $s
       unset IFS
       eval "hp=\${sh_$1_$2:-0}"
       case $hp in
-        0) continue ;;
+        0) g=' ' ;;
         1) g='▒' ;;
         *)
           case $3 in
@@ -1217,11 +1263,11 @@ draw() {
           esac ;;
       esac
       shield_frame="$shield_frame${ESC}[$1;$2H$g"
+      shield_cov="$shield_cov $1;$2 "
     done
     shield_frame="$shield_frame${ESC}[0m"
     shields_dirty=0
   fi
-  f="$f$shield_frame"
 
   # The saucer, or once hit its explosion and then its score (in red, like
   # the arcade's top screen overlay). The explosion is a single picture like
@@ -1229,36 +1275,58 @@ draw() {
   # more each side (kept inside the borders).
   if [ $saucer_x -ne 0 ]; then
     if [ $saucer_hit -eq 0 ]; then
-      f="$f${ESC}[$saucer_row;${saucer_x}H${ESC}[31;4m ◜◝ ${ESC}[0m"
+      put $saucer_row $saucer_x 4 "${ESC}[31;4m ◜◝ ${ESC}[0m"
     elif [ $saucer_hit -gt 72 ]; then
       el='-' er='-' tx=$((saucer_x - 1))
       if [ $tx -lt $left ]; then el=""; tx=$left; fi
       [ $((saucer_x + saucer_w)) -gt $right ] && er=""
-      f="$f${ESC}[$saucer_row;${tx}H${ESC}[31m${el}›**‹${er}${ESC}[0m"
+      put $saucer_row $tx $((4 + ${#el} + ${#er})) \
+        "${ESC}[31m${el}›**‹${er}${ESC}[0m"
     else
       txt=$saucer_pts
       tx=$saucer_x
       [ $((tx + ${#txt} - 1)) -gt $right ] && tx=$((right - ${#txt} + 1))
-      f="$f${ESC}[$saucer_row;${tx}H${ESC}[31m$txt${ESC}[0m"
+      put $saucer_row $tx ${#txt} "${ESC}[31m$txt${ESC}[0m"
+    fi
+  fi
+
+  # "GAME OVER" typed out over the frozen invaders, as in the arcade, once
+  # the explosion has finished. The arcade's text simply overwrote any
+  # invader pixels; here an invader the letters reach is removed whole, so
+  # no half of a two-column emoji is left showing. (The text is drawn last.)
+  sp=""
+  if [ $game_over -eq 1 ] && [ $boom -eq 0 ]; then
+    arcade_text "GAME OVER" $((go_t / go_letter))
+    gx=$((left + field_w / 2 - 8))
+    if [ -n "$sp" ]; then
+      gend=$((gx + ${#sp} - 1))
+      survivors=""
+      for inv in $invaders; do
+        ir=${inv%%:*}; t=${inv#*:}; ic=${t%%:*}
+        [ $ir -eq $go_row ] && [ $((ic + 1)) -ge $gx ] && [ $ic -le $gend ] &&
+          continue
+        survivors="$survivors $inv"
+      done
+      invaders=$survivors
     fi
   fi
 
   # The formation rarely changes between frames (at the start it steps every
-  # ~2s), so only re-render it when it has.
+  # ~2s), so only re-render it, and the cells it covers, when it has.
   if [ "$invaders" != "${drawn_invaders-}" ]; then
-    inv_frame=""
+    inv_frame="" inv_cov=""
     for inv in $invaders; do
       IFS=:
       set -- $inv
       unset IFS
       inv_frame="$inv_frame${ESC}[$1;$2H$3"
+      inv_cov="$inv_cov $1;$2  $1;$(($2 + 1)) "
     done
     drawn_invaders=$invaders
   fi
-  f="$f$inv_frame"
 
   for b in $bullets; do
-    f="$f${ESC}[${b%:*};${b#*:}H¡"   # dot first, as it leaves the cannon
+    put ${b%:*} ${b#*:} 1 '¡'   # dot first, as it leaves the cannon
   done
 
   # Invader shots animate as they fall, frame chosen by row, after the
@@ -1286,7 +1354,7 @@ draw() {
       *)
         if [ $(($1 % 2)) -eq 0 ]; then g='\'; else g='/'; fi ;;
     esac
-    f="$f${ESC}[$1;$2H$g"
+    put $1 $2 1 "$g"
   done
 
   # Explosions, in the overlay's colour where they are. An invader's is 4
@@ -1296,41 +1364,71 @@ draw() {
   # arcade.
   if [ $inv_boom -gt 0 ]; then
     ir=${inv_boom_at%:*}; ic=$((${inv_boom_at#*:} - 1))
-    el='›' em='**' er='‹'
-    if [ $ic -lt $left ]; then el=""; ic=$left; fi
-    [ $((${inv_boom_at#*:} + 2)) -gt $right ] && er=""
+    # Widths by hand: in dash, ${#} counts bytes, and › and ‹ are 3
+    el='›' em='**' er='‹' w=4
+    if [ $ic -lt $left ]; then el=""; ic=$left; w=$((w - 1)); fi
+    if [ $((${inv_boom_at#*:} + 2)) -gt $right ]; then er=""; w=$((w - 1)); fi
     boom_colour $ir
-    f="$f${ESC}[$ir;${ic}H${bcol}${el}${em}${er}${ESC}[0m"
+    put $ir $ic $w "${bcol}${el}${em}${er}${ESC}[0m"
   fi
   if [ $shot_boom -gt 0 ]; then
     boom_colour ${shot_boom_at%:*}
-    f="$f${ESC}[${shot_boom_at%:*};${shot_boom_at#*:}H${bcol}Ж${ESC}[0m"
+    put ${shot_boom_at%:*} ${shot_boom_at#*:} 1 "${bcol}Ж${ESC}[0m"
   fi
   for e in $bomb_booms; do
     t=${e#*:}
     boom_colour ${e%%:*}
-    f="$f${ESC}[${e%%:*};${t%%:*}H${bcol}*${ESC}[0m"
+    put ${e%%:*} ${t%%:*} 1 "${bcol}*${ESC}[0m"
   done
 
-  # "GAME OVER" typed out over the frozen invaders, as in the arcade, once
-  # the explosion has finished. The arcade's text simply overwrote any
-  # invader pixels; here an invader the letters reach is blanked whole
-  # first, so no half of a two-column emoji is left showing.
-  if [ $game_over -eq 1 ] && [ $boom -eq 0 ]; then
-    arcade_text "GAME OVER" $((go_t / go_letter))
-    gx=$((left + field_w / 2 - 8))
-    if [ -n "$sp" ]; then
-      gend=$((gx + ${#sp} - 1))
-      for inv in $invaders; do
-        ir=${inv%%:*}; t=${inv#*:}; ic=${t%%:*}
-        [ $ir -eq $go_row ] && [ $((ic + 1)) -ge $gx ] && [ $ic -le $gend ] &&
-          f="$f${ESC}[$ir;${ic}H  "
-      done
-    fi
-    f="$f${ESC}[$go_row;${gx}H$sp"
-  fi
+  [ -n "$sp" ] && f="$f${ESC}[$go_row;${gx}H$sp"
 
-  printf '%s' "$f${ESC}[?2026l"
+  # Blank what moved: cells covered last frame and not this one. Where a
+  # moving thing was over an invader or a shield, that layer is redrawn
+  # instead.
+  blanks="" inv_touched=0 shields_touched=0
+  for k in $prev_items; do
+    case "$items " in *" $k "*) continue ;; esac
+    zr=${k%%;*}; t=${k#*;}; zc=${t%;*}; zw=${t#*;}
+    while [ $zw -gt 0 ]; do
+      case $cov in
+        *" $zr;$zc "*) ;;
+        *)
+          case $inv_cov in
+            *" $zr;$zc "*) inv_touched=1 ;;
+            *)
+              case $shield_cov in
+                *" $zr;$zc "*) shields_touched=1 ;;
+                *) blanks="$blanks${ESC}[$zr;${zc}H " ;;
+              esac ;;
+          esac ;;
+      esac
+      zc=$((zc + 1)); zw=$((zw - 1))
+    done
+  done
+  prev_items=$items
+
+  # The formation moved: blank the cells it left that nothing covers now
+  if [ "$inv_frame" != "$sent_inv" ]; then
+    for z in $sent_inv_cov; do
+      case $inv_cov$cov in
+        *" $z "*) ;;
+        *) blanks="$blanks${ESC}[${z%;*};${z#*;}H " ;;
+      esac
+    done
+    sent_inv=$inv_frame sent_inv_cov=$inv_cov
+    inv_touched=1
+  fi
+  # Shields go under invaders (passing through them), so those are redrawn
+  # with them
+  if [ "$shield_frame" != "$sent_shields" ] || [ $shields_touched -eq 1 ]; then
+    layers="$layers$shield_frame"
+    sent_shields=$shield_frame
+    inv_touched=1
+  fi
+  [ $inv_touched -eq 1 ] && layers="$layers$inv_frame"
+
+  printf '%s' "$head$blanks$layers$f${ESC}[?2026l"
 }
 
 # Sets $pre to the first $2 characters of $1 (ASCII text) without a
@@ -1484,6 +1582,7 @@ main() {
       go_t=$((go_t + 1))
       if [ $go_t -ge $((9 * go_letter + 120)) ]; then
         mode=title
+        redraw_all=1
         title_t=0
       fi
     else
