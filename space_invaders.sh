@@ -192,18 +192,22 @@ layout() {
   [ $inv_spacing -lt 1 ] && inv_spacing=1
   inv_start_col=$((left + (field_w - (inv_cols - 1) * 4 - 2) / 2))
 
-  # Static scenery, built once: side borders, ground line, controls
+  # Static scenery, built once: side borders, controls
   scenery="${ESC}[2m"
   r=$top_row
   while [ $r -lt $ground_row ]; do
     scenery="$scenery${ESC}[$r;${x0}H│${ESC}[$r;$((right + 1))H│"
     r=$((r + 1))
   done
+  scenery="$scenery${ESC}[0m"
+  # The ground line whole, for the title screen; in play it erodes (see
+  # erode_ground)
   line=""
   c=0
   # Braces matter: bash 3.2 can read a multibyte character as part of a name
   while [ $c -lt $field_w ]; do line="${line}─"; c=$((c + 1)); done
-  scenery="$scenery${ESC}[0m${ESC}[32m${ESC}[$ground_row;${left}H$line${ESC}[0m"
+  ground_full="${ESC}[32m${ESC}[$ground_row;${left}H$line${ESC}[0m"
+  ground_dirty=1
   scenery="$scenery${ESC}[$hud_row;${sc_x}HSCORE${ESC}[$hud_row;${hi_x}HHI-SCORE"
   scenery="$scenery${ESC}[$hud_row;${wv_x}HWAVE"
   # Row below the ground: cannons (drawn each frame); then the controls
@@ -312,6 +316,25 @@ handle_resize() {
   done
   bombs=$moved
 
+  # Explosions in progress move with everything else
+  if [ $inv_boom -gt 0 ]; then
+    remap_row ${inv_boom_at%:*}
+    inv_boom_at="$nr:$((${inv_boom_at#*:} + dx))"
+  fi
+  if [ $shot_boom -gt 0 ]; then
+    remap_row ${shot_boom_at%:*}
+    shot_boom_at="$nr:$((${shot_boom_at#*:} + dx))"
+  fi
+  moved=""
+  for e in $bomb_booms; do
+    IFS=:
+    set -- $e
+    unset IFS
+    remap_row $1
+    moved="$moved $nr:$(($2 + dx)):$3:$4"
+  done
+  bomb_booms=$moved
+
   ship_col=$((ship_col + dx))
   [ $saucer_x -ne 0 ] && saucer_x=$((saucer_x + dx))
 
@@ -345,6 +368,11 @@ handle_resize() {
 #   sh_ROW_COL: hit points left in each shield cell (2 full, 1 damaged,
 #             unset or 0 gone). POSIX sh has no arrays, hence one variable
 #             per cell, accessed with eval.
+#   gnd_I:    the ground line's lit pixels in the field's column I, a 4-bit
+#             mask (bit 0 the leftmost of the column's 4 arcade pixels)
+#   inv_boom, shot_boom: frames left of an invader's or the player's shot's
+#             explosion, at "row:col" $inv_boom_at, $shot_boom_at
+#   bomb_booms: space-separated "row:col:type:turns" invader shot explosions
 # ---------------------------------------------------------------------------
 
 # Restores all shields to full strength (at the start of each wave).
@@ -369,20 +397,112 @@ hit_shield() {
   return 0
 }
 
-# Shots that hit a shield damage it and are destroyed.
+# Shots that hit a shield damage it and blow up.
 check_shields() {
   for b in $bullets; do
-    hit_shield ${b%:*} ${b#*:} && bullets=""
+    hit_shield ${b%:*} ${b#*:} && shot_explodes ${b%:*} ${b#*:}
   done
   remaining=""
   for m in $bombs; do
     IFS=:
     set -- $m
     unset IFS
-    hit_shield $1 $2 && continue
+    if hit_shield $1 $2; then
+      bomb_explodes $1 $2 $3
+      continue
+    fi
     remaining="$remaining $m"
   done
   bombs=$remaining
+}
+
+# ---------------------------------------------------------------------------
+# Explosions, as in the arcade:
+#  - An invader that is hit explodes for 16 frames (1504-152F, 1538). Until
+#    it's gone the formation stands still (DrawAlien, 0100, times the
+#    explosion instead of moving an invader) and the player can't fire.
+#  - The player's shot explodes for 16 frames when it hits anything but an
+#    invader or the saucer, or misses and reaches Y=216 (03D7-03F7, 14E1).
+#    It's still the one shot allowed, so the player can't fire until it's
+#    gone.
+#  - An invader shot that hits something explodes on its next turn, and is
+#    gone three turns later (0644). Until then its type can't fire again.
+# ---------------------------------------------------------------------------
+
+# The player's shot blows up at row $1, column $2.
+shot_explodes() {
+  bullets=""
+  shot_boom=16
+  shot_boom_at="$1:$2"
+}
+
+# An invader shot of type $3 blows up at row $1, column $2.
+bomb_explodes() {
+  bomb_booms="$bomb_booms $1:$2:$3:4"
+}
+
+# Counts down the invader's and the player's shot's explosions (invader
+# shots' count down in move_bombs, on their turns).
+tick_explosions() {
+  [ $inv_boom -gt 0 ] && inv_boom=$((inv_boom - 1))
+  [ $shot_boom -gt 0 ] && shot_boom=$((shot_boom - 1))
+  return 0
+}
+
+# Restores the ground line, as the arcade does for each wave (0804); a lost
+# cannon doesn't restore it.
+reset_ground() {
+  i=0
+  while [ $i -lt $field_w ]; do
+    eval "gnd_$i=15"
+    i=$((i + 1))
+  done
+  ground_dirty=1
+}
+
+# An invader shot blew up on the ground at column $1. The arcade draws the
+# explosion over its 1-pixel green line, then erases it, which clears the
+# line's pixels under the explosion's lit ones. Its pixels on the line
+# depend on the height the shot blew up at (shots blow up below Y=21):
+#   Y=16: -2 -1 0 1 2  (relative to the shot's middle; the shot itself
+#   Y=17: -3 -1 0 1        lands on the line, and erasing it clears pixels
+#   Y=18: -2 0 2           its explosion clears anyway)
+#   Y=19, 20: none, as the explosion is above the line
+# At normal speed shots always blow up at Y=18 (the heights shots move
+# through are fixed: see docs/shot-collisions); at 5 pixels a step, any of
+# 16-20. Shots fall from odd X, so the middle is on an even pixel, one of
+# the two in the column. The frame count chooses where the game can't know.
+erode_ground() {
+  if [ $inv_count -le 8 ]; then
+    case $((frame / 2 % 5)) in
+      0) set -- $1 -2 -1 0 1 2 ;;
+      1) set -- $1 -3 -1 0 1 ;;
+      2) set -- $1 -2 0 2 ;;
+      *) return ;;
+    esac
+  else
+    set -- $1 -2 0 2
+  fi
+  mid=$(( ($1 - left) * 4 + frame % 2 * 2 ))
+  shift
+  for d in "$@"; do
+    p=$((mid + d))
+    [ $p -lt 0 ] || [ $p -ge $((field_w * 4)) ] && continue
+    eval "gnd_$((p / 4))=\$((gnd_$((p / 4)) & ~(1 << $((p % 4)))))"
+  done
+  ground_dirty=1
+}
+
+# Sets $bcol to the colour of the arcade's screen overlay at row $1: red at
+# the top (from the saucer's lane up), green from the shields down.
+boom_colour() {
+  if [ $1 -le $saucer_row ]; then
+    bcol="${ESC}[31m"
+  elif [ $1 -ge $shield_top ]; then
+    bcol="${ESC}[32m"
+  else
+    bcol=""
+  fi
 }
 
 # Sets $reload: how many steps every falling invader shot must have made
@@ -451,8 +571,11 @@ spawn_wave() {
   done
   inv_count=$((inv_rows * inv_cols))
   reset_shields
+  reset_ground
   bullets=""
   bombs=""
+  inv_boom=0 shot_boom=0 bomb_booms=""
+  wave_wait=0   # frames since the last invader was hit (see main)
   bomb_tick=0   # which invader shot type's turn it is (see move_bombs)
   turn=r
   rack_x=$inv_start_col  # screen column of the formation's column 1
@@ -514,6 +637,7 @@ player_hit() {
   boom=60        # the arcade's 12 explosion pictures, 5 frames each
   bullets=""
   bombs=""
+  inv_boom=0 shot_boom=0 bomb_booms=""
   fire_delay=48  # as at the start, the invaders hold fire for a while
   [ $lives -le 0 ] && end_game
 }
@@ -609,13 +733,19 @@ read_input() {
   done
 }
 
-# The player's shot climbs $shot_speed pixels each frame in arcade space.
+# The player's shot climbs $shot_speed pixels each frame in arcade space. As
+# in the arcade, one that reaches Y=216 has missed, and blows up there.
 move_bullets() {
   moved=""
   for b in $bullets; do
     bullet_y=$((bullet_y + shot_speed))
-    y2row $bullet_y
-    [ $row -ge $top_row ] && moved="$row:${b#*:}"
+    if [ $bullet_y -ge 216 ]; then
+      y2row 216
+      shot_explodes $row ${b#*:}
+    else
+      y2row $bullet_y
+      moved="$row:${b#*:}"
+    fi
   done
   bullets=$moved
 }
@@ -636,6 +766,8 @@ check_collisions() {
         # Emoji sprites are two columns wide
         if [ $br -eq $ir ] && [ $bc -ge $ic ] && [ $bc -le $((ic + 1)) ]; then
           hit=1
+          inv_boom=16
+          inv_boom_at="$ir:$ic"
           points "$3"
           score=$((score + pts))
           inv_count=$((inv_count - 1))
@@ -716,6 +848,18 @@ move_bombs() {
     1) turn=p ;;
     *) turn=s ;;
   esac
+  moved=""
+  for e in $bomb_booms; do
+    IFS=:
+    set -- $e
+    unset IFS
+    if [ $3 != $turn ]; then
+      moved="$moved $e"
+    elif [ $4 -gt 1 ]; then
+      moved="$moved $1:$2:$3:$(($4 - 1))"
+    fi
+  done
+  bomb_booms=$moved
   [ -z "$bombs" ] && return
   step=4
   [ $inv_count -le 8 ] && step=5
@@ -727,7 +871,13 @@ move_bombs() {
     if [ $3 = $turn ]; then
       h=$(($5 - step))
       y2row $h
-      [ $row -lt $ground_row ] && moved="$moved $row:$2:$3:$(($4 + 1)):$h"
+      if [ $row -lt $ground_row ]; then
+        moved="$moved $row:$2:$3:$(($4 + 1)):$h"
+      else
+        # Blows up on the ground, just above the line, eroding it
+        bomb_explodes $ship_row $2 $3
+        erode_ground $2
+      fi
     else
       moved="$moved $m"
     fi
@@ -753,6 +903,8 @@ drop_bomb() {
   [ -z "$invaders" ] && return
 
   bt=$turn
+  # A type whose last shot is still blowing up can't fire yet
+  case "$bomb_booms" in *":$bt:"*) return ;; esac
   [ $bt = p ] && [ $inv_count -eq 1 ] && return
   # The saucer uses the squiggly shot's slot in the arcade
   [ $bt = s ] && [ $saucer_x -ne 0 ] && return
@@ -874,9 +1026,9 @@ check_bombs() {
       meet_outcome
       case $outcome in
         pass) eval "passed_$mt=$shots" ;;
-        bomb) bullets="" ;;
-        bullet) continue ;;
-        neither) bullets=""; continue ;;
+        bomb) shot_explodes $br $mc ;;
+        bullet) bomb_explodes $mr $mc $mt; continue ;;
+        neither) shot_explodes $br $mc; bomb_explodes $mr $mc $mt; continue ;;
       esac
     fi
     remaining="$remaining $m"
@@ -999,6 +1151,32 @@ draw() {
     f="$f${ESC}[$((ground_row + 1));$((left + 1))H$n_txt$spares"
   fi
 
+  # The ground line, worn by invader shots blowing up on it: each column
+  # shows its 4 pixels as best it can. Re-rendered only when it changes.
+  if [ $mode = title ]; then
+    f="$f$ground_full"
+  else
+    if [ $ground_dirty -eq 1 ]; then
+      ground_frame="${ESC}[32m${ESC}[$ground_row;${left}H"
+      i=0
+      while [ $i -lt $field_w ]; do
+        eval "g=\$gnd_$i"
+        case $g in
+          15) g='─' ;;
+          0) g=' ' ;;
+          1|2|3) g='╴' ;;     # left half only
+          4|8|12) g='╶' ;;    # right half only
+          *) g='╌' ;;         # gaps across the column
+        esac
+        ground_frame="${ground_frame}${g}"
+        i=$((i + 1))
+      done
+      ground_frame="${ground_frame}${ESC}[0m"
+      ground_dirty=0
+    fi
+    f="$f$ground_frame"
+  fi
+
   if [ $mode = title ]; then
     draw_title
     printf '%s' "$f${ESC}[?2026l"
@@ -1102,6 +1280,35 @@ draw() {
         if [ $(($1 % 2)) -eq 0 ]; then g='\'; else g='/'; fi ;;
     esac
     f="$f${ESC}[$1;$2H$g"
+  done
+
+  # Explosions, in the overlay's colour where they are. An invader's is 4
+  # columns wide like the arcade's 16-pixel starburst, centred on the
+  # invader (but kept inside the borders), playing through five pictures
+  # (the first for 4 frames, the rest for 3). The player's shot's is bigger
+  # than invader shots', as in the arcade.
+  if [ $inv_boom -gt 0 ]; then
+    ir=${inv_boom_at%:*}; ic=$((${inv_boom_at#*:} - 1))
+    case $(( (16 - inv_boom) * 5 / 16 )) in
+      0) el=' ' em='**' er=' ' ;;
+      1) el=' ' em='‹›' er=' ' ;;
+      2) el='‹' em='**' er='›' ;;
+      3) el='‹' em='--' er='›' ;;
+      *) el='‹' em='  ' er='›' ;;
+    esac
+    if [ $ic -lt $left ]; then el=""; ic=$left; fi
+    [ $((${inv_boom_at#*:} + 2)) -gt $right ] && er=""
+    boom_colour $ir
+    f="$f${ESC}[$ir;${ic}H${bcol}${el}${em}${er}${ESC}[0m"
+  fi
+  if [ $shot_boom -gt 0 ]; then
+    boom_colour ${shot_boom_at%:*}
+    f="$f${ESC}[${shot_boom_at%:*};${shot_boom_at#*:}H${bcol}Ж${ESC}[0m"
+  fi
+  for e in $bomb_booms; do
+    t=${e#*:}
+    boom_colour ${e%%:*}
+    f="$f${ESC}[${e%%:*};${t%%:*}H${bcol}*${ESC}[0m"
   done
 
   # "GAME OVER" typed out over the frozen invaders, as in the arcade, once
@@ -1279,13 +1486,16 @@ main() {
         title_t=0
       fi
     else
+      tick_explosions
       if [ $move -lt 0 ] && [ $ship_col -gt $left ]; then
         ship_col=$((ship_col - 1))
       elif [ $move -gt 0 ] && [ $((ship_col + 2)) -lt $right ]; then
         ship_col=$((ship_col + 1))
       fi
-      # One shot on screen at a time, as in the arcade
-      if [ $fire -eq 1 ] && [ -z "$bullets" ]; then
+      # One shot on screen at a time, as in the arcade, counting it while it
+      # blows up or the invader it hit does
+      if [ $fire -eq 1 ] && [ -z "$bullets" ] && [ $shot_boom -eq 0 ] &&
+         [ $inv_boom -eq 0 ]; then
         bullets="$((ship_row - 1)):$((ship_col + 1))"
         rowy $((ship_row - 1)); bullet_y=$ry
         shots=$((shots + 1))
@@ -1295,7 +1505,8 @@ main() {
       check_saucer
       check_shields
       check_collisions
-      if move_invaders; then
+      # The formation stands still while an invader explodes
+      if [ $inv_boom -eq 0 ] && move_invaders; then
         # Re-check so bullets can't slip past invaders that just dropped
         check_collisions
         [ $landed -eq 1 ] && invaded
@@ -1308,9 +1519,14 @@ main() {
         update_saucer
       fi
       check_bonus
+      # As in the arcade (0A3C), play goes on for 48 frames after the last
+      # invader is hit, then the next wave starts
       if [ -z "$invaders" ]; then
-        wave=$((wave + 1))
-        spawn_wave
+        wave_wait=$((wave_wait + 1))
+        if [ $wave_wait -ge 48 ]; then
+          wave=$((wave + 1))
+          spawn_wave
+        fi
       fi
     fi
 
