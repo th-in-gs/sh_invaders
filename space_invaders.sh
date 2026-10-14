@@ -82,9 +82,12 @@ term_size() {
     tries=$((tries + 1))
   done
   # The reply is the ESC[...R with two numbers (others may be keys pressed)
+  # ($csi, not a nested "${ESC}[" in ${reply#...}, which some editors'
+  # syntax highlighting can't follow)
+  csi="${ESC}["
   while :; do
     case $reply in
-      *"${ESC}["*) reply=${reply#*"${ESC}["} ;;
+      *"$csi"*) reply=${reply#*"$csi"} ;;
       *) break ;;
     esac
     rows=${reply%%";"*}; cols=${reply#*";"}; cols=${cols%%R*}
@@ -100,7 +103,9 @@ term_size() {
 # unless the game is to draw in ASCII.
 check_locale() {
   [ $ascii -eq 1 ] && return
-  loc=${LC_ALL:-${LC_CTYPE:-${LANG:-}}}
+  loc=${LANG:-}
+  loc=${LC_CTYPE:-$loc}
+  loc=${LC_ALL:-$loc}
   case $loc in
     *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) return ;;
   esac
@@ -830,8 +835,9 @@ read_input() {
       # lone ESC is just skipped.
       case $keys in
         '['*|O*)
-          intro=${keys%"${keys#?}"}
-          keys=${keys#?}
+          rest=${keys#?}
+          intro=${keys%"$rest"}
+          keys=$rest
           if [ "$intro" = '[' ]; then
             while :; do
               case $keys in
@@ -840,8 +846,9 @@ read_input() {
               esac
             done
           fi
-          final=${keys%"${keys#?}"}
-          keys=${keys#?}
+          rest=${keys#?}
+          final=${keys%"$rest"}
+          keys=$rest
           case $final in
             D) move=-1 ;;   # left arrow
             C) move=1 ;;    # right arrow
