@@ -22,55 +22,76 @@ set -f  # no globbing when splitting state strings
 ESC=$(printf '\033')
 BEL=$(printf '\007')
 
+old_stty=""     # the terminal's settings, to restore (see init)
+alt_screen=0    # 1 once on the alternate screen
+exit_msg=""     # why the game is exiting, if it has to (see cleanup)
+
 field_w=56  # 224 arcade pixels at ~4 pixels per column
 
 # ---------------------------------------------------------------------------
 # Terminal setup / teardown
 # ---------------------------------------------------------------------------
 
-# tput is part of ncurses, which minimal systems may lack: fall back to the
-# standard escape sequences for showing/hiding the cursor and switching to
-# and from the alternate screen.
+# The cursor is hidden and the alternate screen used with the standard
+# escape sequences, like everything the game draws (tput's names for them
+# are terminfo's, not POSIX's, and would need a program run for each).
 #
 # cleanup runs from the EXIT trap, so the terminal is restored however the
 # game ends: quitting, a signal, or the shell stopping on an error (set -u).
-# It keeps the exit status, so an error is still reported as one.
+# It keeps the exit status, so an error is still reported as one. A reason
+# for exiting in $exit_msg is shown once the terminal is back to normal.
 cleanup() {
   rc=$?
   trap - EXIT INT TERM HUP
-  tput cnorm 2>/dev/null || printf '%s' "${ESC}[?25h"
-  tput rmcup 2>/dev/null || printf '%s' "${ESC}[?1049l"
-  if [ -n "${old_stty:-}" ]; then
+  if [ $alt_screen -eq 1 ]; then
+    printf '%s' "${ESC}[?25h${ESC}[?1049l"   # show the cursor; main screen
+  fi
+  if [ -n "$old_stty" ]; then
     stty "$old_stty" 2>/dev/null || stty sane 2>/dev/null || true
   fi
-  # A shell error message went to the alternate screen, which has now gone,
-  # so say that something went wrong (signals, 128 and up, are not errors)
-  if [ $rc -ne 0 ] && [ $rc -lt 128 ]; then
+  if [ -n "$exit_msg" ]; then
+    echo "$exit_msg" >&2
+  elif [ $rc -ne 0 ] && [ $rc -lt 128 ]; then
+    # A shell error message went to the alternate screen, which has now
+    # gone, so say that something went wrong (signals, 128 and up, aren't
+    # errors)
     echo "#!/bin/sh INVADERS stopped with an error (exit status $rc)." >&2
   fi
   exit $rc
 }
 
-# Sets $rows and $cols to the terminal size, from tput or else stty.
-# Don't redirect tput's stderr: with it redirected, tput was seen to report
-# a default 80x24 instead of the real size (presumably because, inside
-# $(...), stderr is its only link to the terminal). So check tput exists
-# first, rather than hiding the error when it doesn't.
+# Sets $rows and $cols to the terminal's size, by asking the terminal, as
+# xterm's resize command does: the cursor is sent to row and column 999,
+# which the terminal limits to its bottom-right corner, then asked where it
+# is (ESC[6n). The terminal replies as if typed: ESC[<row>;<col>R. (The
+# cursor is saved and restored around this, with ESC 7 and ESC 8.) The input
+# must be unbuffered and unechoed (see init); anything else read meanwhile
+# is dropped. Any terminal that can draw the game can answer; the reply is
+# waited for for up to 2 seconds, in case of a slow connection. Returns 1 if
+# none comes.
 term_size() {
-  rows=""; cols=""
-  if command -v tput >/dev/null 2>&1; then
-    rows=$(tput lines); cols=$(tput cols)
-  fi
-  case "$rows$cols" in
-    ''|*[!0-9]*)
-      set -- $(stty size 2>/dev/null)
-      rows=${1:-}; cols=${2:-} ;;
-  esac
-  case "$rows$cols" in
-    ''|*[!0-9]*)
-      echo "Can't determine the terminal size (no tput or stty size)." >&2
-      exit 1 ;;
-  esac
+  printf '%s' "${ESC}7${ESC}[999;999H${ESC}[6n${ESC}8"
+  reply=""
+  tries=0
+  while [ $tries -lt 100 ]; do
+    IFS= read -r chunk || true   # partial input (no newline) returns 1
+    reply="$reply$chunk"
+    case $reply in *"${ESC}["*R*) break ;; esac
+    sleep 0.02
+    tries=$((tries + 1))
+  done
+  # The reply is the ESC[...R with two numbers (others may be keys pressed)
+  while :; do
+    case $reply in
+      *"${ESC}["*) reply=${reply#*"${ESC}["} ;;
+      *) break ;;
+    esac
+    rows=${reply%%;*}; cols=${reply#*;}; cols=${cols%%R*}
+    case $rows in ''|*[!0-9]*) continue ;; esac
+    case $cols in ''|*[!0-9]*) continue ;; esac
+    return 0
+  done
+  return 1
 }
 
 # The game draws emoji and box/block symbols, which need a UTF-8 locale.
@@ -102,18 +123,34 @@ init() {
     echo "$0 must be run in a terminal (input and output)." >&2
     exit 1
   fi
-  term_size
-  if [ $cols -lt $((field_w + 2)) ] || [ $rows -lt 24 ]; then
-    echo "Terminal is ${cols}x${rows}; at least $((field_w + 2))x24 is needed." >&2
+  check_locale   # (it may wait for Enter, so before input is changed)
+
+  # From here the terminal is changed, so make sure it gets restored. Signals
+  # exit with the usual status (128 + signal number), which runs cleanup.
+  trap cleanup EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  # Non-blocking, unechoed, unbuffered input: reads return immediately
+  old_stty=$(stty -g)
+  stty -icanon -echo min 0 time 0
+
+  if ! term_size; then
+    exit_msg="The terminal didn't say what size it is (it didn't answer ESC[6n)."
     exit 1
   fi
-  check_locale
+  if [ $cols -lt $((field_w + 2)) ] || [ $rows -lt 24 ]; then
+    exit_msg="Terminal is ${cols}x${rows}; at least $((field_w + 2))x24 is needed."
+    exit 1
+  fi
 
   # Redo the layout when the window is resized (see handle_resize)
   resized=0
   too_small=0
   trap 'resized=1' WINCH 2>/dev/null || true
 
+  printf '%s' "${ESC}[?25l${ESC}[?1049h"   # hide the cursor; alternate screen
+  alt_screen=1
   layout
   init_game
 }
@@ -226,18 +263,6 @@ init_game() {
   mode=title   # ... but start on the title screen, like the arcade
   title_t=0
 
-  # Non-blocking, unechoed, unbuffered input: reads return immediately
-  # From here the terminal is changed, so make sure it gets restored. Signals
-  # exit with the usual status (128 + signal number), which runs cleanup.
-  trap cleanup EXIT
-  trap 'exit 129' HUP
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
-  old_stty=$(stty -g)
-  stty -icanon -echo min 0 time 0
-  tput civis 2>/dev/null || printf '%s' "${ESC}[?25l"
-  tput smcup 2>/dev/null || printf '%s' "${ESC}[?1049h"
-
   frame=0           # counts every frame from startup (see check_bombs)
 
   # Frame pacing (see pace)
@@ -269,7 +294,11 @@ remap_row() {
 # the game pauses (keeping the old layout) until it is big enough again.
 handle_resize() {
   resized=0
-  term_size
+  o_rows=$rows o_cols=$cols
+  if ! term_size; then
+    rows=$o_rows cols=$o_cols   # carry on as we were
+    return
+  fi
   if [ $cols -lt $((field_w + 2)) ] || [ $rows -lt 24 ]; then
     too_small=1
     return

@@ -53,7 +53,8 @@ The high score is kept in `~/.space_invaders_hiscore`.
 - **Characters:** a UTF-8 locale and a font with emoji. The other
   characters are all in SF Mono, Terminal.app's default font, so nothing
   needs to come from a fallback font.
-- **Commands:** `stty`, `sleep` and `date`, plus `tput` if it's there. The
+- **Commands:** just `stty`, `sleep` and `date`. The game asks the terminal
+  itself for its size (as xterm's `resize` does), so needs no `tput`. The
   only programs started during play are `sleep`, once a frame, and `date`,
   every few frames, to keep the game at 60 frames a second.
 
