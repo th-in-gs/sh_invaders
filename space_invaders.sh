@@ -186,11 +186,11 @@ layout() {
   shot_speed=4
 
   # Invader formation: 11 x 5, rows 16 arcade pixels apart, columns 4 apart
+  # (16 pixels: see inv_place)
   inv_rows=5
   inv_cols=11
   inv_spacing=$(( (16 * field_h + 128) / 256 ))
   [ $inv_spacing -lt 1 ] && inv_spacing=1
-  inv_start_col=$((left + (field_w - (inv_cols - 1) * 4 - 2) / 2))
 
   # Static scenery, built once: side borders, controls
   scenery="${ESC}[2m"
@@ -274,28 +274,38 @@ handle_resize() {
   fi
   too_small=0
 
-  o_y0=$y0; o_h=$field_h; o_left=$left; o_spacing=$inv_spacing
+  o_y0=$y0; o_h=$field_h; o_left=$left
   o_cells=$shield_cells
-  o_rack_y=$rack_y
   layout
   dx=$((left - o_left))
 
-  # Formation: its bottom row moves to the new layout, and invaders keep
-  # their places relative to it. Rounding mustn't put it above the first
-  # wave's starting row (where it could meet the saucer) or down where it
-  # would land.
-  remap_row $o_rack_y
-  rack_y=$nr
-  [ $rack_y -lt $rack_start_row ] && rack_y=$rack_start_row
-  [ $rack_y -ge $land_row ] && rack_y=$((land_row - 1))
-  rack_x=$((rack_x + dx))
+  # Formation: its bottom row moves to the new layout (as it was both
+  # before and after its last move), and invaders are placed from it afresh.
+  # Rounding mustn't put it above the first wave's starting row (where it
+  # could meet the saucer) or down where it would land.
+  for v in rack_y prev_rack_y; do
+    eval "remap_row \$$v"
+    [ $nr -lt $rack_start_row ] && nr=$rack_start_row
+    [ $nr -ge $land_row ] && nr=$((land_row - 1))
+    eval "$v=$nr"
+  done
   moved=""
+  k=0
   for inv in $invaders; do
-    ir=${inv%%:*}; t=${inv#*:}; ic=${t%%:*}
-    ir=$((rack_y - (o_rack_y - ir) * inv_spacing / o_spacing))
-    moved="$moved $ir:$((ic + dx)):${t#*:}"
+    IFS=:
+    set -- $inv
+    unset IFS
+    # Invaders the cursor has reached this sweep are at the new position
+    if [ $k -lt $inv_cur ]; then
+      inv_place $4 $5 $rack_px $rack_y
+    else
+      inv_place $4 $5 $prev_rack_px $prev_rack_y
+    fi
+    moved="$moved $ir:$ic:$3:$4:$5"
+    k=$((k + 1))
   done
   invaders=$moved
+  inv_rebuild=1
 
   # Shots keep their heights in arcade space, so they just get their rows in
   # the new layout; any now outside the playfield are dropped
@@ -355,12 +365,13 @@ handle_resize() {
 
   # Redraw everything that is normally cached
   shields_dirty=1
-  drawn_invaders="#"
 }
 
 # ---------------------------------------------------------------------------
 # Game state
-#   invaders: space-separated "row:col:sprite"
+#   invaders: space-separated "row:col:sprite:r:c" (r, c their place in the
+#             rack, 0,0 the bottom left), in the order the arcade moves
+#             them: from the bottom left, along each row and up
 #   bullets:  the player's shot, "row:col" (at most one, as in the arcade);
 #             its height in arcade space is in $bullet_y
 #   bombs:    space-separated "row:col:type:steps:height" invader shots
@@ -385,6 +396,8 @@ reset_shields() {
     eval "sh_$1_$2=2"
   done
   shields_dirty=1
+  shields_whole=1    # send them all (see draw)
+  shield_changed=""
 }
 
 # Damages the shield cell at row $1, column $2. Returns 1 if there is no
@@ -395,6 +408,7 @@ hit_shield() {
   [ $hp -eq 0 ] && return 1
   eval "sh_$1_$2=$((hp - 1))"
   shields_dirty=1
+  shield_changed="$shield_changed $1;$2"
   return 0
 }
 
@@ -554,23 +568,33 @@ spawn_wave() {
   # rounding to rows can put it on them, so keep it one row clear.
   [ $bottom -ge $shield_top ] && bottom=$((shield_top - 1))
 
+  # The formation's reference: its bottom-left invader's slot at X=24, as in
+  # the arcade (see inv_place). Rows count up from the bottom.
+  rack_px=24
+  rack_y=$bottom
   invaders=""
   r=0
   while [ $r -lt $inv_rows ]; do
     case $r in
-      0) sprite="👾" ;;     # the arcade's "squid"
-      1|2) sprite="🦀" ;;   # "crab"
-      *) sprite="🐙" ;;     # "octopus"
+      0|1) sprite="🐙" ;;   # the arcade's "octopus"
+      2|3) sprite="🦀" ;;   # "crab"
+      *) sprite="👾" ;;     # "squid"
     esac
-    ir=$((bottom - (inv_rows - 1 - r) * inv_spacing))
     c=0
     while [ $c -lt $inv_cols ]; do
-      invaders="$invaders $ir:$((inv_start_col + c * 4)):$sprite"
+      inv_place $r $c $rack_px $rack_y
+      invaders="$invaders $ir:$ic:$sprite:$r:$c"
       c=$((c + 1))
     done
     r=$((r + 1))
   done
   inv_count=$((inv_rows * inv_cols))
+  prev_rack_px=$rack_px prev_rack_y=$rack_y
+  inv_dx=2       # pixels per sweep, to the right first
+  inv_drop=0     # rows to drop on the next sweep
+  inv_cur=0      # the cursor: the next invader to move (see move_invaders)
+  inv_events=""  # invaders moved or gone since the last draw (see draw)
+  inv_rebuild=1
   reset_shields
   reset_ground
   bullets=""
@@ -579,12 +603,18 @@ spawn_wave() {
   wave_wait=0   # frames since the last invader was hit (see main)
   bomb_tick=0   # which invader shot type's turn it is (see move_bombs)
   turn=r
-  rack_x=$inv_start_col  # screen column of the formation's column 1
-  rack_y=$bottom         # screen row of the formation's bottom row
   saucer_x=0             # no saucer on screen
   saucer_hit=0
-  inv_dir=1
-  inv_tick=0
+}
+
+# Sets $ir, $ic to where the invader in rack row $1 (0 at the bottom),
+# column $2 (0 at the left) is drawn, with the formation's reference at
+# X=$3 arcade pixels and bottom row $4. As in the arcade, each invader has a
+# 16-pixel slot (the reference is the bottom-left one's left edge); the
+# emoji is 8 pixels wide, in the middle of it.
+inv_place() {
+  ic=$((left + ($3 + $2 * 16 + 4) / 4))
+  ir=$(($4 - $1 * inv_spacing))
 }
 
 # Starts a new game (at launch, and on 'r' after game over).
@@ -754,13 +784,22 @@ move_bullets() {
 
 check_collisions() {
   [ -z "$bullets" ] && return
+  # Usually no invader is in the shot's cell (or the one before, emoji being
+  # two columns wide), which is quick to see
+  br=${bullets%:*}; bc=${bullets#*:}
+  case "$invaders " in
+    *" $br:$bc:"*|*" $br:$((bc - 1)):"*) ;;
+    *) return ;;
+  esac
   survivors=""
+  k=0
   for inv in $invaders; do
     IFS=:
     set -- $inv
     unset IFS
     ir=$1; ic=$2
     hit=0
+    k=$((k + 1))
     remaining=""
     for b in $bullets; do
       if [ $hit -eq 0 ]; then
@@ -773,6 +812,9 @@ check_collisions() {
           points "$3"
           score=$((score + pts))
           inv_count=$((inv_count - 1))
+          inv_events="$inv_events -$inv"
+          # The cursor stays on the same invader
+          [ $k -le $inv_cur ] && inv_cur=$((inv_cur - 1))
           continue
         fi
       fi
@@ -784,57 +826,62 @@ check_collisions() {
   invaders=$survivors
 }
 
-# Returns 0 if the formation moved this frame; sets $landed=1 if any invader
-# has reached $land_row.
+# Moves one invader a frame, as the arcade does (0141, 0100). A cursor
+# steps through the live invaders, from the bottom left along each row and
+# up, putting each where the formation's reference now places it. Once the
+# cursor has been round them all, the reference moves (01A1): 2 pixels
+# across (3 to the right for a lone invader, 18F1), and also down a row if
+# the formation has reached an edge. So each move ripples through the
+# formation, bottom row first, and an invader moves a column (4 pixels)
+# every 2 x invaders frames.
+# Returns 0 if an invader moved to another cell; sets $landed=1 if it
+# reached $land_row.
 move_invaders() {
   landed=0
-  # The arcade moves one invader 2 pixels per frame, so the whole formation
-  # steps one column (4 pixels) every 2 x invaders frames. The last invader
-  # moves 3 pixels per frame; the nearest whole number of frames per column
-  # is 1.
-  inv_tick=$((inv_tick + 1))
-  if [ $inv_count -eq 1 ]; then
-    inv_delay=1
-  else
-    inv_delay=$((inv_count * 2))
+  [ -z "$invaders" ] && return 1
+  set -- $invaders
+  if [ $inv_cur -ge $# ]; then
+    prev_rack_px=$rack_px prev_rack_y=$rack_y
+    rack_px=$((rack_px + inv_dx))
+    rack_y=$((rack_y + inv_drop))
+    inv_drop=0
+    inv_cur=0
   fi
-  [ $inv_tick -lt $inv_delay ] && return 1
-  inv_tick=0
-
-  min_col=$cols
-  max_col=0
-  for inv in $invaders; do
-    ic=${inv#*:}; ic=${ic%%:*}
-    [ $ic -gt $max_col ] && max_col=$ic
-    [ $ic -lt $min_col ] && min_col=$ic
-  done
-
-  # Reverse and drop on reaching a border (sprites are two columns wide)
-  drop=0
-  if [ $inv_dir -eq 1 ] && [ $((max_col + 1)) -ge $right ]; then
-    inv_dir=-1; drop=1
-  elif [ $inv_dir -eq -1 ] && [ $min_col -le $left ]; then
-    inv_dir=1; drop=1
+  eval "old=\${$((inv_cur + 1))}"
+  inv_cur=$((inv_cur + 1))
+  IFS=:
+  set -- $old
+  unset IFS
+  inv_place $4 $5 $rack_px $rack_y
+  [ $ir -ge $land_row ] && landed=1
+  # Invaders passing through the shields erase them, as in the arcade
+  if [ $ir -ge $shield_top ] && [ $ir -le $shield_bot ]; then
+    eval "sh_${ir}_${ic}=0 sh_${ir}_$((ic + 1))=0"
+    shields_dirty=1
+    shield_changed="$shield_changed $ir;$ic $ir;$((ic + 1))"
   fi
-
-  moved=""
-  for inv in $invaders; do
-    IFS=:
-    set -- $inv
-    unset IFS
-    ir=$(($1 + drop))
-    ic=$(($2 + inv_dir))
-    [ $ir -ge $land_row ] && landed=1
-    # Invaders passing through the shields erase them, as in the arcade
-    if [ $ir -ge $shield_top ] && [ $ir -le $shield_bot ]; then
-      eval "sh_${ir}_${ic}=0 sh_${ir}_$((ic + 1))=0"
-      shields_dirty=1
-    fi
-    moved="$moved $ir:$ic:$3"
-  done
-  invaders=$moved
-  rack_x=$((rack_x + inv_dir))
-  rack_y=$((rack_y + drop))
+  # As in the arcade (1597), the formation turns, dropping on its next
+  # move, as soon as an invader's pixels reach X=213 or X=9. The types'
+  # sprites are different widths in their 16-pixel slots (1C00-1C2F).
+  x=$((rack_px + $5 * 16))
+  case $3 in
+    🐙) lo=2 hi=13 ;;
+    🦀) lo=3 hi=13 ;;
+    *) lo=4 hi=11 ;;
+  esac
+  if [ $inv_dx -gt 0 ] && [ $((x + hi)) -ge 213 ]; then
+    inv_dx=-2 inv_drop=1
+  elif [ $inv_dx -lt 0 ] && [ $((x + lo)) -le 9 ]; then
+    inv_dx=2 inv_drop=1
+    [ $inv_count -eq 1 ] && inv_dx=3
+  fi
+  new="$ir:$ic:$3:$4:$5"
+  [ "$new" = "$old" ] && return 1
+  # (Cutting at the end first and the known start second is much quicker
+  # than ${invaders#*" $old"}, which is slow in long strings)
+  pre=${invaders%%" $old"*}
+  invaders="$pre $new${invaders#"$pre $old"}"
+  inv_events="$inv_events -$old +$new"
   return 0
 }
 
@@ -922,10 +969,11 @@ drop_bomb() {
 
   case $bt in
     r)
-      # Formation column (1-11) over the player's centre, clamped to the
-      # formation (the arcade uses column 11 when the player is beyond it)
-      x=$((ship_col + 1 - rack_x))
-      if [ $x -lt 0 ]; then col=1; else col=$((x / 4 + 1)); fi
+      # Formation column (1-11) over the player's centre (in arcade
+      # pixels, from the reference), clamped to the formation (the arcade
+      # uses column 11 when the player is beyond it)
+      x=$(( (ship_col + 1 - left) * 4 + 2 - rack_px ))
+      if [ $x -lt 0 ]; then col=1; else col=$((x / 16 + 1)); fi
       [ $col -gt 11 ] && col=11 ;;
     p)
       col_fire_table $plu_idx
@@ -937,16 +985,22 @@ drop_bomb() {
       [ $squ_idx -gt 20 ] && squ_idx=6 ;;
   esac
 
-  # Lowest live invader in that column
-  colx=$((rack_x + (col - 1) * 4))
-  sr=0
+  # Lowest live invader in that column (the list starts with the bottom
+  # row). As in the arcade, the shot starts where the reference puts it,
+  # whether or not the cursor has reached it yet.
+  lr=""
   for inv in $invaders; do
     IFS=:
     set -- $inv
     unset IFS
-    [ $2 -eq $colx ] && [ $1 -gt $sr ] && sr=$1
+    if [ $5 -eq $((col - 1)) ]; then
+      lr=$4
+      break
+    fi
   done
-  [ $sr -eq 0 ] && return
+  [ -z "$lr" ] && return
+  inv_place $lr $((col - 1)) $rack_px $rack_y
+  sr=$ir colx=$ic
 
   # Sprites are two columns wide; the rolling shot falls from whichever
   # half is nearer the player, the others from the left half
@@ -1136,6 +1190,23 @@ check_saucer() {
 # startup, on a resize, for a new game, and back at the title screen.
 # ---------------------------------------------------------------------------
 
+# Sets $piece to draw the shield cell at row $1, column $2 as it now is
+# (blank once shot away).
+shield_piece() {
+  eval "hp=\${sh_$1_$2:-0}"
+  case $hp in
+    0) g=' ' ;;
+    1) g='▒' ;;
+    *)
+      case " $shield_cells " in
+        *" $1:$2:L "*) g='▟' ;;
+        *" $1:$2:R "*) g='▙' ;;
+        *) g='█' ;;
+      esac ;;
+  esac
+  piece="${ESC}[$1;$2H$g"
+}
+
 # Adds $4 to the frame at row $1, column $2, $3 columns wide, and records
 # the cells it covers ($items lists "row;col;width", $cov " row;col " per
 # cell).
@@ -1154,16 +1225,19 @@ draw() {
     printf '%s' "${ESC}[?2026h${ESC}[H${ESC}[2JWindow too small: ${cols}x${rows}, need at least $((field_w + 2))x24. Paused (q quits).${ESC}[?2026l"
     return
   fi
+  inv_touched=0 cleared=0
   if [ $redraw_all -eq 1 ]; then
     head="${ESC}[?2026h${ESC}[H${ESC}[2J$scenery"
+    cleared=1
     prev_items=""
     # Nothing has been sent onto the cleared screen yet
-    sent_hud="" sent_ground="" sent_shields="" sent_inv="" sent_inv_cov=""
+    sent_hud="" sent_ground="" sent_shields=""
+    inv_touched=1
     redraw_all=0
   else
     head="${ESC}[?2026h"
   fi
-  f="" items="" cov="" layers=""
+  f="" items="" cov="" layers="" blanks=""
   [ $bell -eq 1 ] && { head="$head$BEL"; bell=0; }
 
   # Score values under their headings, zero-padded like the arcade's
@@ -1244,26 +1318,14 @@ draw() {
   fi
 
   # Shields (green, like the arcade's screen overlay) change only when hit,
-  # so they are re-rendered only then. Cells shot away are drawn blank.
+  # so they are re-rendered only then (and sent as below)
   if [ $shields_dirty -eq 1 ]; then
     shield_frame="${ESC}[32m" shield_cov=""
     for s in $shield_cells; do
-      IFS=:
-      set -- $s
-      unset IFS
-      eval "hp=\${sh_$1_$2:-0}"
-      case $hp in
-        0) g=' ' ;;
-        1) g='▒' ;;
-        *)
-          case $3 in
-            L) g='▟' ;;
-            R) g='▙' ;;
-            *) g='█' ;;
-          esac ;;
-      esac
-      shield_frame="$shield_frame${ESC}[$1;$2H$g"
-      shield_cov="$shield_cov $1;$2 "
+      qr=${s%%:*}; t=${s#*:}; qc=${t%%:*}
+      shield_piece $qr $qc
+      shield_frame="$shield_frame$piece"
+      shield_cov="$shield_cov $qr;$qc "
     done
     shield_frame="$shield_frame${ESC}[0m"
     shields_dirty=0
@@ -1303,17 +1365,25 @@ draw() {
       survivors=""
       for inv in $invaders; do
         ir=${inv%%:*}; t=${inv#*:}; ic=${t%%:*}
-        [ $ir -eq $go_row ] && [ $((ic + 1)) -ge $gx ] && [ $ic -le $gend ] &&
+        if [ $ir -eq $go_row ] && [ $((ic + 1)) -ge $gx ] && [ $ic -le $gend ]
+        then
+          inv_events="$inv_events -$inv"
           continue
+        fi
         survivors="$survivors $inv"
       done
       invaders=$survivors
     fi
   fi
 
-  # The formation rarely changes between frames (at the start it steps every
-  # ~2s), so only re-render it, and the cells it covers, when it has.
-  if [ "$invaders" != "${drawn_invaders-}" ]; then
+  # The formation: $inv_frame draws it all and $inv_cov lists its cells.
+  # Usually just one invader has moved (or one has gone) since the last
+  # frame, so only those changes are drawn: each moved or gone invader's
+  # piece is taken out, and each moved one's added and drawn. The cells
+  # they leave are blanked below. A new wave or layout rebuilds it all.
+  inv_add="" gone_cov=""
+  if [ $inv_rebuild -eq 1 ]; then
+    gone_cov=${inv_cov-}
     inv_frame="" inv_cov=""
     for inv in $invaders; do
       IFS=:
@@ -1322,8 +1392,34 @@ draw() {
       inv_frame="$inv_frame${ESC}[$1;$2H$3"
       inv_cov="$inv_cov $1;$2  $1;$(($2 + 1)) "
     done
-    drawn_invaders=$invaders
+    inv_touched=1
+    inv_rebuild=0
+  else
+    for ev in $inv_events; do
+      IFS=:
+      set -- ${ev#?}
+      unset IFS
+      piece="${ESC}[$1;$2H$3"
+      cells=" $1;$2  $1;$(($2 + 1)) "
+      case $ev in
+        -*)
+          case $inv_frame in
+            *"$piece"*)
+              # (see move_invaders for why it's cut this way)
+              pre=${inv_frame%%"$piece"*}
+              inv_frame="$pre${inv_frame#"$pre$piece"}"
+              pre=${inv_cov%%"$cells"*}
+              inv_cov="$pre${inv_cov#"$pre$cells"}"
+              gone_cov="$gone_cov$cells" ;;
+          esac ;;
+        *)
+          inv_frame="$inv_frame$piece"
+          inv_cov="$inv_cov$cells"
+          inv_add="$inv_add $piece" ;;
+      esac
+    done
   fi
+  inv_events=""
 
   for b in $bullets; do
     put ${b%:*} ${b#*:} 1 '¡'   # dot first, as it leaves the cannon
@@ -1384,9 +1480,9 @@ draw() {
   [ -n "$sp" ] && f="$f${ESC}[$go_row;${gx}H$sp"
 
   # Blank what moved: cells covered last frame and not this one. Where a
-  # moving thing was over an invader or a shield, that layer is redrawn
-  # instead.
-  blanks="" inv_touched=0 shields_touched=0
+  # moving thing was over an invader or a shield, that invader or shield
+  # cell is redrawn instead.
+  inv_redo="" shield_redo=""
   for k in $prev_items; do
     case "$items " in *" $k "*) continue ;; esac
     zr=${k%%;*}; t=${k#*;}; zc=${t%;*}; zw=${t#*;}
@@ -1395,10 +1491,10 @@ draw() {
         *" $zr;$zc "*) ;;
         *)
           case $inv_cov in
-            *" $zr;$zc "*) inv_touched=1 ;;
+            *" $zr;$zc "*) inv_redo="$inv_redo $zr;$zc" ;;
             *)
               case $shield_cov in
-                *" $zr;$zc "*) shields_touched=1 ;;
+                *" $zr;$zc "*) shield_redo="$shield_redo $zr;$zc" ;;
                 *) blanks="$blanks${ESC}[$zr;${zc}H " ;;
               esac ;;
           esac ;;
@@ -1408,25 +1504,63 @@ draw() {
   done
   prev_items=$items
 
-  # The formation moved: blank the cells it left that nothing covers now
-  if [ "$inv_frame" != "$sent_inv" ]; then
-    for z in $sent_inv_cov; do
-      case $inv_cov$cov in
-        *" $z "*) ;;
-        *) blanks="$blanks${ESC}[${z%;*};${z#*;}H " ;;
-      esac
-    done
-    sent_inv=$inv_frame sent_inv_cov=$inv_cov
-    inv_touched=1
-  fi
-  # Shields go under invaders (passing through them), so those are redrawn
-  # with them
-  if [ "$shield_frame" != "$sent_shields" ] || [ $shields_touched -eq 1 ]; then
+  # Invaders that moved or went: blank the cells they left that nothing
+  # covers now
+  for z in $gone_cov; do
+    case $inv_cov$cov in
+      *" $z "*) ;;
+      *)
+        case $shield_cov in
+          *" $z "*) shield_redo="$shield_redo $z" ;;
+          *) blanks="$blanks${ESC}[${z%;*};${z#*;}H " ;;
+        esac ;;
+    esac
+  done
+  # A cleared screen has nothing to blank (and after a resize, the cells
+  # left are in the old layout)
+  [ $cleared -eq 1 ] && blanks=""
+
+  # Shields: all of them on a cleared screen or for a new wave; otherwise
+  # just the cells that were hit, or that something has passed over. Shields
+  # go under invaders (passing through them), so an invader on a redrawn
+  # cell is redrawn too.
+  if [ -z "$sent_shields" ] || [ $shields_whole -eq 1 ]; then
     layers="$layers$shield_frame"
-    sent_shields=$shield_frame
+    sent_shields=1 shields_whole=0
     inv_touched=1
+  elif [ -n "$shield_changed$shield_redo" ]; then
+    layers="$layers${ESC}[32m"
+    for z in $shield_changed $shield_redo; do
+      shield_piece ${z%;*} ${z#*;}
+      layers="$layers$piece"
+      case $inv_cov in *" $z "*) inv_redo="$inv_redo $z" ;; esac
+    done
+    layers="$layers${ESC}[0m"
   fi
-  [ $inv_touched -eq 1 ] && layers="$layers$inv_frame"
+  shield_changed=""
+
+  # Invaders: all of them when need be; otherwise just those that moved
+  # (and are still there), and any on cells redrawn or passed over
+  if [ $inv_touched -eq 1 ]; then
+    layers="$layers$inv_frame"
+  else
+    for piece in $inv_add; do
+      case $inv_frame in *"$piece"*) layers="$layers$piece" ;; esac
+    done
+    for z in $inv_redo; do
+      zr=${z%;*} zc=${z#*;}
+      # The invader there starts in this column or the one before
+      for zc in $zc $((zc - 1)); do
+        case $invaders in
+          *" $zr:$zc:"*)
+            pre=${invaders%%" $zr:$zc:"*}
+            t=${invaders#"$pre $zr:$zc:"}
+            piece="${ESC}[$zr;${zc}H${t%%:*}"
+            case $layers in *"$piece"*) ;; *) layers="$layers$piece" ;; esac ;;
+        esac
+      done
+    done
+  fi
 
   printf '%s' "$head$blanks$layers$f${ESC}[?2026l"
 }
@@ -1607,7 +1741,7 @@ main() {
       check_collisions
       # The formation stands still while an invader explodes
       if [ $inv_boom -eq 0 ] && move_invaders; then
-        # Re-check so bullets can't slip past invaders that just dropped
+        # Re-check so a shot can't slip past the invader that just moved
         check_collisions
         [ $landed -eq 1 ] && invaded
       fi
