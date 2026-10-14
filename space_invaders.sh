@@ -1224,12 +1224,19 @@ draw() {
   f="$f$shield_frame"
 
   # The saucer, or once hit its explosion and then its score (in red, like
-  # the arcade's top screen overlay)
+  # the arcade's top screen overlay). The explosion is a single picture like
+  # the arcade's, and as in the arcade it's wider than the saucer: a column
+  # more each side (kept inside the borders).
   if [ $saucer_x -ne 0 ]; then
     if [ $saucer_hit -eq 0 ]; then
       f="$f${ESC}[$saucer_row;${saucer_x}H${ESC}[31;4m ◜◝ ${ESC}[0m"
+    elif [ $saucer_hit -gt 72 ]; then
+      el='-' er='-' tx=$((saucer_x - 1))
+      if [ $tx -lt $left ]; then el=""; tx=$left; fi
+      [ $((saucer_x + saucer_w)) -gt $right ] && er=""
+      f="$f${ESC}[$saucer_row;${tx}H${ESC}[31m${el}›**‹${er}${ESC}[0m"
     else
-      if [ $saucer_hit -gt 72 ]; then txt='<*>'; else txt=$saucer_pts; fi
+      txt=$saucer_pts
       tx=$saucer_x
       [ $((tx + ${#txt} - 1)) -gt $right ] && tx=$((right - ${#txt} + 1))
       f="$f${ESC}[$saucer_row;${tx}H${ESC}[31m$txt${ESC}[0m"
@@ -1284,18 +1291,12 @@ draw() {
 
   # Explosions, in the overlay's colour where they are. An invader's is 4
   # columns wide like the arcade's 16-pixel starburst, centred on the
-  # invader (but kept inside the borders), playing through five pictures
-  # (the first for 4 frames, the rest for 3). The player's shot's is bigger
-  # than invader shots', as in the arcade.
+  # invader (but kept inside the borders), and a single picture like the
+  # arcade's. The player's shot's is bigger than invader shots', as in the
+  # arcade.
   if [ $inv_boom -gt 0 ]; then
     ir=${inv_boom_at%:*}; ic=$((${inv_boom_at#*:} - 1))
-    case $(( (16 - inv_boom) * 5 / 16 )) in
-      0) el=' ' em='**' er=' ' ;;
-      1) el=' ' em='‹›' er=' ' ;;
-      2) el='‹' em='**' er='›' ;;
-      3) el='‹' em='--' er='›' ;;
-      *) el='‹' em='  ' er='›' ;;
-    esac
+    el='›' em='**' er='‹'
     if [ $ic -lt $left ]; then el=""; ic=$left; fi
     [ $((${inv_boom_at#*:} + 2)) -gt $right ] && er=""
     boom_colour $ir
