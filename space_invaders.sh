@@ -86,7 +86,7 @@ term_size() {
       *"${ESC}["*) reply=${reply#*"${ESC}["} ;;
       *) break ;;
     esac
-    rows=${reply%%;*}; cols=${reply#*;}; cols=${cols%%R*}
+    rows=${reply%%";"*}; cols=${reply#*";"}; cols=${cols%%R*}
     case $rows in ''|*[!0-9]*) continue ;; esac
     case $cols in ''|*[!0-9]*) continue ;; esac
     return 0
@@ -753,7 +753,9 @@ read_input() {
   # Terminal is in min 0 time 0 mode, so read returns at once with whatever
   # is pending (status 1, as it sees EOF). IFS= keeps spaces (fire key).
   IFS= read -r keys
-  while [ -n "$keys" ]; do
+  # (Not [ -n "$keys" ]: some shells' test reads keys like = or ! as
+  # operators)
+  while [ ${#keys} -gt 0 ]; do
     rest=${keys#?}
     key=${keys%"$rest"}
     keys=$rest
@@ -1514,7 +1516,7 @@ draw() {
   inv_redo="" shield_redo=""
   for k in $prev_items; do
     case "$items " in *" $k "*) continue ;; esac
-    zr=${k%%;*}; t=${k#*;}; zc=${t%;*}; zw=${t#*;}
+    zr=${k%%";"*}; t=${k#*";"}; zc=${t%";"*}; zw=${t#*";"}
     while [ $zw -gt 0 ]; do
       case $cov in
         *" $zr;$zc "*) ;;
@@ -1541,7 +1543,9 @@ draw() {
       *)
         case $shield_cov in
           *" $z "*) shield_redo="$shield_redo $z" ;;
-          *) blanks="$blanks${ESC}[${z%;*};${z#*;}H " ;;
+          *)
+            zr=${z%";"*} zc=${z#*";"}
+            blanks="$blanks${ESC}[$zr;${zc}H " ;;
         esac ;;
     esac
   done
@@ -1560,7 +1564,7 @@ draw() {
   elif [ -n "$shield_changed$shield_redo" ]; then
     layers="$layers${ESC}[32m"
     for z in $shield_changed $shield_redo; do
-      shield_piece ${z%;*} ${z#*;}
+      shield_piece ${z%";"*} ${z#*";"}
       layers="$layers$piece"
       case $inv_cov in *" $z "*) inv_redo="$inv_redo $z" ;; esac
     done
@@ -1577,7 +1581,7 @@ draw() {
       case $inv_frame in *"$piece"*) layers="$layers$piece" ;; esac
     done
     for z in $inv_redo; do
-      zr=${z%;*} zc=${z#*;}
+      zr=${z%";"*} zc=${z#*";"}
       # The invader there starts in this column or the one before
       for zc in $zc $((zc - 1)); do
         case $invaders in
@@ -1619,7 +1623,8 @@ arcade_text() {
   prefix "$s" ${3:-0}
   sp=$pre
   s=${s#"$pre"}
-  while [ -n "$s" ]; do
+  # (Not [ -n "$s" ]: some shells' test reads an s of "=" as an operator)
+  while [ ${#s} -gt 0 ]; do
     s_rest=${s#?}
     sp="$sp${s%"$s_rest"} "
     s=$s_rest
@@ -1657,10 +1662,12 @@ draw_title() {
   left_cols=$title_t
   for line in "$@"; do
     [ $left_cols -le 0 ] && break
-    lr=$((r0 + ${line%%|*})); rest=${line#*|}
-    lc=${rest%%|*}; rest=${rest#*|}
-    icon=${rest%%|*}; rest=${rest#*|}
-    plain=${rest%%|*}; text=${rest#*|}
+    # ("|" is quoted: Korn shells read a bare | in a pattern as "or")
+    lr=${line%%"|"*}; rest=${line#*"|"}
+    lr=$((r0 + lr))
+    lc=${rest%%"|"*}; rest=${rest#*"|"}
+    icon=${rest%%"|"*}; rest=${rest#*"|"}
+    plain=${rest%%"|"*}; text=${rest#*"|"}
     width=$((plain + 2 * (${#text} - plain) - 1))
     [ "$lc" = c ] && lc=$((mid_c - width / 2))
     case $icon in
