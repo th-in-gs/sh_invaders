@@ -66,9 +66,9 @@ cleanup() {
 # is (ESC[6n). The terminal replies as if typed: ESC[<row>;<col>R. (The
 # cursor is saved and restored around this, with ESC 7 and ESC 8.) The input
 # must be unbuffered and unechoed (see init); anything else read meanwhile
-# is dropped. Any terminal that can draw the game can answer; the reply is
-# waited for for up to 2 seconds, in case of a slow connection. Returns 1 if
-# none comes.
+# is dropped. Any terminal that can draw the game can answer. The game waits
+# up to 2 seconds for the reply, in case of a slow connection, and returns
+# 1 if none comes.
 term_size() {
   printf '%s' "${ESC}7${ESC}[999;999H${ESC}[6n${ESC}8"
   reply=""
@@ -184,23 +184,24 @@ layout() {
   y2row 40; land_row=$((row + 1))
   [ $land_row -gt $((ship_row - 1)) ] && land_row=$((ship_row - 1))
 
+  # The flying saucer crosses at Y=208. It is drawn " ◜◝ " underlined: a
+  # dome over a flat body, in red like the arcade's overlay, 4 columns wide
+  # like the arcade's 16 pixels.
+  y2row 208; saucer_row=$row
+  saucer_w=4
+  [ $saucer_row -lt $top_row ] && saucer_row=$top_row
+  # The arcade prints GAME OVER at Y=192-200 (screen address $2D18): between
+  # the saucer's lane and the top of the first wave
+  y2row 196; go_row=$row
+  # The first wave's starting height (Y=120). The saucer's timer only runs
+  # once the formation is below it.
+  y2row 120; rack_start_row=$row
+
   # Shields: four 22x16-pixel arches with a notch underneath, bases at Y=48,
   # left edges at x=34, 79, 124, 169. At this scale, 6 columns x 2 rows:
   #   ▟████▙
   #   ██  ██
   # Cells are listed as "row:col:kind" (L/R = rounded top corners).
-  # The flying saucer crosses at Y=208. Its timer only runs once the
-  # formation is below the first wave's starting height (Y=120).
-  # It is drawn " ◜◝ " underlined: a dome over a flat body, in red like the
-  # arcade's overlay, 4 columns wide like the arcade's 16 pixels.
-  y2row 208; saucer_row=$row
-  # The arcade prints GAME OVER at Y=192-200 (screen address $2D18): between
-  # the saucer's lane and the top of the first wave
-  y2row 196; go_row=$row
-  saucer_w=4
-  [ $saucer_row -lt $top_row ] && saucer_row=$top_row
-  y2row 120; rack_start_row=$row
-
   y2row 48; shield_bot=$row
   shield_top=$((shield_bot - 1))
   shield_cells=""
@@ -224,14 +225,15 @@ layout() {
   # fewer invaders are left: the arcade's SpeedShots)
   shot_speed=4
 
-  # Invader formation: 11 x 5, rows 16 arcade pixels apart, columns 4 apart
-  # (16 pixels: see inv_place)
+  # Invader formation: 11 x 5, rows 16 arcade pixels apart, and columns 16
+  # (4 terminal columns: see inv_place)
   inv_rows=5
   inv_cols=11
   inv_spacing=$(( (16 * field_h + 128) / 256 ))
   [ $inv_spacing -lt 1 ] && inv_spacing=1
 
-  # Static scenery, built once: side borders, controls
+  # Scenery that doesn't change, built for each layout: side borders, score
+  # headings, controls
   scenery="${ESC}[2m"
   r=$top_row
   while [ $r -lt $ground_row ]; do
@@ -250,20 +252,24 @@ layout() {
   redraw_all=1   # a new layout: clear the screen and draw it afresh
   scenery="$scenery${ESC}[$hud_row;${sc_x}HSCORE${ESC}[$hud_row;${hi_x}HHI-SCORE"
   scenery="$scenery${ESC}[$hud_row;${wv_x}HWAVE"
-  # Row below the ground: cannons (drawn each frame); then the controls
+  # The row below the ground shows the cannons left (see draw); the
+  # controls go below that
   help="MOVE: H/L OR ARROWS   FIRE: SPACE   QUIT: Q"
   scenery="$scenery${ESC}[$((ground_row + 2));$((left + (field_w - ${#help}) / 2))H$help"
 }
 
 init_game() {
   quit=0
+  dbg=0          # 1 to show the frame rate (F toggles it)
+  fps_hist=""    # the last 8 measured rates, in tenths of a frame a second
+  dbg_txt="--    " # (6 columns wide: see fps_stats)
   go_letter=7  # frames per letter of "GAME OVER", as in the arcade
   load_hiscore
   new_game     # sets up a game (so the score line has something to show) ...
   mode=title   # ... but start on the title screen, like the arcade
   title_t=0
 
-  frame=0           # counts every frame from startup (see check_bombs)
+  frame=0           # counts every frame from startup (see meet_outcome)
 
   # Frame pacing (see pace)
   target_us=16667   # 60 fps, the arcade's rate
@@ -271,6 +277,20 @@ init_game() {
   pace_frames=0
   pace_check=0
   pace_sec=""       # second at which the current measurement started
+  pace_win=2        # seconds a measurement of the frame rate takes
+  pace_mode=fine    # fine, cal, tick or busy (see pace)
+  pace_prev_delay=0 pace_prev_frame=0   # a measurement to compare, in fine
+  pace_coarse=0     # 1 if the last measurement suggested coarse sleeps
+  pace_long=0       # 1 if its frames were too long
+  spin=0            # count to busy-wait, and how long a count takes, in ns
+  spin_ns=0
+  cal_f="" cal_k=0  # the last measurement's frame time and count, in cal
+  work_us=0         # time a frame takes without waiting
+  cyc=0             # frame in the cycle, in tick
+  pace_quiet=0      # measurements since the count last changed, in tick
+  pace_drift=0      # frames gained (+) or lost (-) since the last
+                    # correction, in tick
+  pace_bad=0        # how often the count has needed correcting, in tick
   clock_sec
   pace_seen=$now    # (empty if there's no usable clock: keep the delay)
 }
@@ -745,7 +765,7 @@ save_hiscore() {
 }
 
 # Sets $move (-1, 0, 1), $fire (0/1), $restart (0/1) and $quit from all
-# keys pressed since the previous frame.
+# keys pressed since the previous frame, and toggles $dbg on F.
 read_input() {
   move=0
   fire=0
@@ -789,6 +809,7 @@ read_input() {
     case $key in
       q|Q) quit=1 ;;
       r|R) restart=1 ;;
+      f|F) dbg=$((1 - dbg)) ;;   # the frame-rate display (see draw)
       h|H|a|A) move=-1 ;;
       l|L|d|D) move=1 ;;
       ' ') fire=1 ;;
@@ -813,6 +834,7 @@ move_bullets() {
   bullets=$moved
 }
 
+# The player's shot hitting an invader: the invader explodes and scores.
 check_collisions() {
   [ -z "$bullets" ] && return
   # Usually no invader is in the shot's cell (or the one before, emoji being
@@ -1278,6 +1300,24 @@ draw() {
   hud="$hud${ESC}[$((hud_row + 1));$((hi_x + 2))H$p4"
   # Right-justified under WAVE, mirroring the score under SCORE
   hud="$hud${ESC}[$((hud_row + 1));$((wv_x + 4 - ${#wave}))H$wave"
+  # With F, timing in the window's top-left corner (6 columns are free
+  # there at any width). On the first row, how it's pacing (see pace): "f"
+  # (fine) and the sleep in ms, or "c", "t" or "b" (cal, tick or busy) and
+  # the busy-wait's count. On the second, the last measured frame rate and
+  # how much the last 8 vary (see fps_stats). Turned off, the same cells
+  # are sent as blanks.
+  if [ $dbg -eq 1 ]; then
+    case $pace_mode in
+      fine) t="f $((delay_us / 1000))ms" ;;
+      cal) t="c$spin" ;;
+      tick) t="t$spin" ;;
+      busy) t="b$spin" ;;
+    esac
+    while [ ${#t} -lt 6 ]; do t="$t "; done
+    hud="$hud${ESC}[1;1H$t${ESC}[2;1H$dbg_txt"
+  else
+    hud="$hud${ESC}[1;1H      ${ESC}[2;1H      "
+  fi
   if [ "$hud" != "$sent_hud" ]; then
     layers="$layers$hud"
     sent_hud=$hud
@@ -1704,45 +1744,308 @@ clock_sec() {
   case $now in ''|*[!0-9]*) now="" ;; esac
 }
 
+# For the frame-rate display: adds the rate just measured ($frame_us per
+# frame, usually over 2 seconds: see pace_measure) to the last 8, and sets
+# $dbg_txt to it and the 8's standard deviation, padded to 6 columns.
+# (There's no sub-second clock, so single frames can't be timed: this is how
+# much the measured rates vary.) Rates are in tenths of a frame a second.
+fps_stats() {
+  fps10=$((10000000 / frame_us))
+  set -- $fps10 $fps_hist
+  [ $# -gt 8 ] && set -- $1 $2 $3 $4 $5 $6 $7 $8
+  fps_hist="$*"
+  sum=0
+  for v in "$@"; do sum=$((sum + v)); done
+  mean=$((sum / $#))
+  var=0
+  for v in "$@"; do var=$((var + (v - mean) * (v - mean))); done
+  var=$((var / $#))
+  # Integer square root (Newton's method)
+  sd=$var
+  if [ $sd -gt 1 ]; then
+    sd2=$(( (sd + 1) / 2 ))
+    while [ $sd2 -lt $sd ]; do
+      sd=$sd2
+      sd2=$(( (sd + var / sd) / 2 ))
+    done
+  fi
+  # As "60±0.4": the decimal is dropped if it won't fit in 6 columns
+  f=$(( (fps10 + 5) / 10 )); [ $f -gt 999 ] && f=999
+  [ $sd -gt 999 ] && sd=999
+  t="$((sd / 10)).$((sd % 10))"
+  [ $((${#f} + 1 + ${#t})) -gt 6 ] && t=$(( (sd + 5) / 10 ))
+  # (± is one column, but dash counts its two bytes in ${#}, so the
+  # padding is worked out without it)
+  pad=$((6 - ${#f} - 1 - ${#t}))
+  dbg_txt="${f}±${t}"   # (braces: bash 3.2 can read ± as part of a name)
+  while [ $pad -gt 0 ]; do dbg_txt="$dbg_txt "; pad=$((pad - 1)); done
+}
+
 # Sleeps between frames, keeping the game at 60 fps on any machine. Most of
 # a frame is the sleep, and a sleep takes longer than requested: measured on
 # a Mac running macOS 27, ~1.6ms to start the sleep program plus ~3-4ms of
 # oversleep. Other systems will differ, so the actual frame rate is measured
-# and the delay adjusted to suit. POSIX sh has no sub-second clock, so the
-# rate is measured over 2-second windows that start and end on second
-# boundaries (clock_sec, checked every 4th frame).
+# and the delay adjusted to suit (see below for how, with a clock that only
+# gives seconds).
 #
 # (POSIX sleep only takes whole seconds: sleeping for a fraction of one is
 # the game's one requirement beyond POSIX, and every system has it.)
+#
+# Some systems sleep in whole clock ticks: a sleep ends on a tick, and lasts
+# at least a tick or two whatever is asked (OpenBSD, usually at 100 ticks a
+# second, ends even a 0.001s sleep on the second tick after it starts:
+# 10-20ms, often longer than a 60 fps frame). The game then
+# busy-waits (counts) instead, and where it can, uses the ticks to keep
+# exact time. $pace_mode says how it's pacing:
+#
+#  - fine: sleeping every frame, as above.
+#  - cal: sleeps are coarse. Busy-waiting in every frame and not sleeping,
+#    trying different counts until near 60 fps. That gives how long a count
+#    takes, and how long a frame takes without one (see pace_cal).
+#  - tick: if frames take little time without waiting, locked to the ticks.
+#    The game sleeps only every third frame, and busy-waits in the others.
+#    As a sleep ends on a tick, a cycle of 3 frames lasts a whole number of
+#    ticks: exactly 50ms, 3 frames at 60 fps, if the sleep starts 30-40ms
+#    into the cycle (it then ends at the tick after next). Anywhere in that
+#    10ms slot will do, so the busy-waits needn't be exact, and the frame
+#    rate is exactly 60 (see pace_tick).
+#  - busy: if frames take too long, or vary too much, for that slot,
+#    busy-waiting in every frame, with the count adjusted as the sleep is
+#    in fine.
+#
+# Busy-waiting keeps a processor busy, but only on such systems.
+#
+# All this needs timing to well under a millisecond, but the only clock
+# POSIX sh has is date, which gives whole seconds (clock_sec), and takes a
+# millisecond or two to run, so is read only every few frames. No single
+# frame is ever timed. Instead:
+#
+#  - Measuring averages. Counting the frames between one change of the
+#    second and the next but one (pace_measure) gives the average frame
+#    time over those 2 seconds. Each change is noticed at the first read
+#    after it, up to 4 frames late, but so is the next, so of ~120 frames
+#    the count is out by at most 4: about 3%.
+#  - Feedback. After each measurement, the sleep (or the count) is moved by
+#    half the error. One measurement's error is small, and is made up for
+#    in the next few, so over time the rate comes out right.
+#  - Adding up. Each measurement starts where the last ended, so the frames
+#    counted over many of them are out by only the latest end's error,
+#    however long the game has run. That's how pace_tick can tell a few
+#    cycles 10ms too long (each costs 0.6 of a frame) from that error.
+#  - A ruler. Two measurements with different counts give how long a count
+#    takes (pace_cal). Busy-waiting is then a sub-second unit of time,
+#    measured against the second.
+#  - The kernel's clock. Where sleeps end on ticks, the ticks themselves
+#    keep exact time: the clock only has to show whether cycles end on the
+#    right tick, at 50ms, not 40 or 60. That's a difference of about 20% in
+#    the frame rate, easy to see.
 pace() {
-  if [ -n "$pace_seen" ]; then
-    pace_frames=$((pace_frames + 1))
-    pace_check=$((pace_check + 1))
-    if [ $pace_check -ge 4 ]; then
-      pace_check=0
-      clock_sec
-      if [ -n "$now" ] && [ "$now" != "$pace_seen" ]; then
-        pace_seen=$now
-        # Seconds since the window started (the clock wraps at 60)
-        secs=$(( (now - ${pace_sec:-$now} + 60) % 60 ))
-        if [ -z "$pace_sec" ]; then
-          pace_sec=$now        # first second boundary: start measuring
-          pace_frames=0
-        elif [ $secs -ge 2 ]; then
-          frame_us=$((secs * 1000000 / pace_frames))
-          # Correct half the error each time, so noise doesn't make it hunt
-          delay_us=$((delay_us - (frame_us - target_us) / 2))
-          [ $delay_us -lt 0 ] && delay_us=0
-          [ $delay_us -gt 40000 ] && delay_us=40000
-          pace_sec=$now
-          pace_frames=0
-        fi
-      fi
+  pace_frames=$((pace_frames + 1))
+  if [ $pace_mode = tick ]; then
+    cyc=$((cyc + 1))
+    if [ $cyc -lt 3 ]; then
+      spin_wait
+      return
     fi
+    cyc=0
+    sleep 0.001
+    pace_measure   # (just after a tick, at the same point in every cycle)
+    return
+  fi
+  pace_check=$((pace_check + 1))
+  if [ $pace_check -ge 4 ]; then
+    pace_check=0
+    pace_measure
+  fi
+  if [ $pace_mode != fine ]; then
+    spin_wait
+    return
   fi
   # Format microseconds as 0.dddddd without a subshell (delay is < 1s)
   d=$((delay_us + 1000000))
   sleep "0.${d#1}"
+}
+
+# Busy-waits: counts down from $spin.
+spin_wait() {
+  i=$spin
+  while [ $i -gt 0 ]; do i=$((i - 1)); done
+}
+
+# Reads the clock, and at the end of each measurement ($pace_win seconds),
+# adjusts the pacing (see pace).
+pace_measure() {
+  [ -n "$pace_seen" ] || return 0
+  clock_sec
+  { [ -n "$now" ] && [ "$now" != "$pace_seen" ]; } || return 0
+  pace_seen=$now
+  # Seconds since the measurement started (the clock wraps at 60)
+  secs=$(( (now - ${pace_sec:-$now} + 60) % 60 ))
+  if [ -z "$pace_sec" ]; then
+    pace_sec=$now        # first second boundary: start measuring
+    pace_frames=0
+    return
+  fi
+  [ $secs -ge $pace_win ] || return 0
+  frame_us=$((secs * 1000000 / pace_frames))
+  fps_stats
+  pace_$pace_mode
+  pace_sec=$now
+  pace_frames=0
+}
+
+# Sleeping every frame: adjusts the sleep by half the error, so noise
+# doesn't make it hunt, or decides that sleeps are coarse. They are if two
+# measurements in a row (so not just a moment when the machine was busy)
+# have frames over 10% too long, and:
+#  - a frame takes more than a frame's time beyond its sleep, or
+#  - sleeping under 3ms, or
+#  - sleeping 3ms or more less than in the measurement compared with (the
+#    last with frames not too long, or the first) made frames shorter by
+#    under a quarter of that.
+# While frames stay too long (two measurements in a row, so again not just a
+# busy moment) but sleeps aren't suspected of being coarse, the whole error
+# is corrected, not half, so that 3ms cut comes after a few measurements.
+pace_fine() {
+  cut=$((pace_prev_delay - delay_us))
+  if [ $((frame_us * 100)) -gt $((target_us * 110)) ]; then
+    if [ $((frame_us - delay_us)) -gt $target_us ] ||
+       [ $delay_us -lt 3000 ] ||
+       { [ $cut -ge 3000 ] &&
+         [ $(( (pace_prev_frame - frame_us) * 4)) -lt $cut ]; }
+    then
+      if [ $pace_coarse -eq 1 ]; then
+        # Busy-wait instead, at first for a 1-second measurement, in case
+        # the count is far out
+        pace_mode=cal pace_win=1 spin=1000 cal_f=""
+      else
+        # See if the next measurement agrees, without changing anything
+        pace_coarse=1
+      fi
+      return
+    fi
+    pace_coarse=0
+    if [ $pace_prev_frame -eq 0 ] || [ $cut -ge 3000 ]; then
+      pace_prev_delay=$delay_us pace_prev_frame=$frame_us
+    fi
+    if [ $pace_long -eq 1 ]; then
+      delay_us=$((delay_us - (frame_us - target_us)))
+    else
+      delay_us=$((delay_us - (frame_us - target_us) / 2))
+    fi
+    pace_long=1
+  else
+    pace_coarse=0 pace_long=0
+    pace_prev_delay=$delay_us pace_prev_frame=$frame_us
+    delay_us=$((delay_us - (frame_us - target_us) / 2))
+  fi
+  [ $delay_us -lt 0 ] && delay_us=0
+  [ $delay_us -gt 40000 ] && delay_us=40000
+}
+
+# After each measurement of busy-waiting in every frame (see pace), works
+# out how long a count takes from this measurement and the last, and how
+# long a frame takes without one. Then if the frame rate was within 10% of
+# 60, goes on to tick or busy, and if not, tries the count that should give
+# 60.
+pace_cal() {
+  # The first measurement, of 1 second, is too rough to compare with: it
+  # just gives the count to start from
+  if [ $pace_win -eq 1 ]; then
+    pace_win=2
+    spin=$((spin * target_us / frame_us))
+    [ $spin -lt 1 ] && spin=1
+    return
+  fi
+  # (If the count hardly changed, noise would swamp the difference: the
+  # last estimate is kept)
+  i=$((spin - cal_k)); [ $i -lt 0 ] && i=$((-i))
+  if [ -n "$cal_f" ] && [ $((i * 8)) -ge $spin ]; then
+    spin_ns=$(( (frame_us - cal_f) * 1000 / (spin - cal_k) ))
+  fi
+  cal_f=$frame_us cal_k=$spin
+  if [ $spin_ns -le 0 ]; then
+    # With no estimate yet (or if something else changed the frames'
+    # length more), assume the frames took no time but the count. That can
+    # only overestimate the count's time, so the next measurement can't be
+    # slower than 60. If that's hardly a change (already near 60), try 3/4
+    # of the count, so the next measurement gives a measurable difference.
+    spin_ns=0
+    i=$((spin * target_us / frame_us))
+    [ $(( (spin - i) * 4)) -lt $spin ] && [ $(( (i - spin) * 4)) -lt $spin ] &&
+      i=$((spin * 3 / 4))
+    spin=$i
+    [ $spin -lt 1 ] && spin=1
+    return
+  fi
+  work_us=$((frame_us - spin * spin_ns / 1000))
+  [ $work_us -lt 0 ] && work_us=0
+  if [ $(( (frame_us - target_us) * 10)) -gt $target_us ] ||
+     [ $(( (target_us - frame_us) * 10)) -gt $target_us ]; then
+    spin=$(( (target_us - work_us) * 1000 / spin_ns ))
+    [ $spin -lt 1 ] && spin=1
+    return
+  fi
+  # Lock to the ticks only if frames take under 4ms without waiting: 3
+  # frames' work then leaves most of a cycle to the busy-waits, which take
+  # much the same time every cycle. Frames that take longer also vary more,
+  # by more than the 10ms slot over 3 frames (OpenBSD in a VM: 7-12ms).
+  if [ $work_us -lt 4000 ]; then
+    # Start the sleeps in the middle of the slot, by the estimates
+    pace_mode=tick cyc=0 pace_drift=0 pace_bad=0 spin=0
+    spin_more $((3 * target_us - 15000 - 3 * work_us))
+  else
+    pace_mode=busy
+  fi
+}
+
+# Adds to the busy-wait count, to make the sleep start $1 us later in the
+# cycle (or earlier, if negative), but with no frame longer than a 60th of
+# a second.
+spin_more() {
+  spin=$((spin + $1 * 500 / spin_ns))   # (2 frames in a cycle busy-wait)
+  i=$(( (target_us - work_us) * 1000 / spin_ns ))
+  [ $spin -gt $i ] && spin=$i
+  [ $spin -lt 0 ] && spin=0
+  pace_quiet=0
+}
+
+# Locked to the ticks, after each measurement: if cycles have been too long
+# or too short, makes the sleeps start 1.5ms earlier or later. If not, every
+# 8 measurements makes them start 0.5ms later, to space the frames more
+# evenly. If it keeps needing correcting (in over a third of measurements,
+# for a while), frames vary too much for the slot: just busy-wait.
+#
+# The frames gained or lost on 60 a second are added up over the
+# measurements: their ends are only found to within a cycle (3 frames), but
+# that error cancels out from one to the next, while cycles of the wrong
+# length add up. Frames are counted in whole cycles, so 6 (2 cycles) is more
+# than the error.
+pace_tick() {
+  pace_drift=$((pace_drift + pace_frames - 60 * secs))
+  if [ $pace_drift -ge 6 ]; then
+    spin_more 1500
+  elif [ $pace_drift -le -6 ]; then
+    spin_more -1500
+  else
+    pace_quiet=$((pace_quiet + 1))
+    [ $pace_bad -gt 0 ] && pace_bad=$((pace_bad - 1))
+    [ $pace_quiet -ge 8 ] && spin_more 500
+    return 0
+  fi
+  pace_drift=0
+  pace_bad=$((pace_bad + 2))
+  if [ $pace_bad -ge 12 ]; then
+    pace_mode=busy
+    spin=$(( (target_us - work_us) * 1000 / spin_ns ))
+  fi
+}
+
+# Busy-waiting in every frame: adjusts the count by half the error, as
+# pace_fine does the sleep.
+pace_busy() {
+  spin=$((spin - (frame_us - target_us) * 500 / spin_ns))
+  [ $spin -lt 0 ] && spin=0
 }
 
 main() {

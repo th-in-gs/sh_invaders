@@ -25,8 +25,9 @@ to the 1978 arcade game as a grid of characters allows.
 sh space_invaders.sh
 ```
 
-It runs in `sh`, `dash` and `bash`, including the bash 3.2 that comes with
-macOS. In zsh, use `zsh --emulate sh space_invaders.sh`.
+It runs in `sh`, `dash`, `bash` (including the bash 3.2 that comes with
+macOS) and Korn shells (including OpenBSD's `sh`). In zsh, use
+`zsh --emulate sh space_invaders.sh`.
 
 | Key | Action |
 |---|---|
@@ -34,6 +35,7 @@ macOS. In zsh, use `zsh --emulate sh space_invaders.sh`.
 | Space or `↑` | Fire |
 | `R` | Start (and play again after game over) |
 | `Q` | Quit |
+| `F` | Show or hide the frame rate (top left) |
 
 The high score is kept in `~/.space_invaders_hiscore`.
 
@@ -55,8 +57,14 @@ The high score is kept in `~/.space_invaders_hiscore`.
   needs to come from a fallback font.
 - **Commands:** just `stty`, `sleep` and `date`. The game asks the terminal
   itself for its size (as xterm's `resize` does), so needs no `tput`. The
-  only programs started during play are `sleep`, once a frame, and `date`,
-  every few frames, to keep the game at 60 frames a second.
+  only programs started during play are `sleep` and `date`, every frame or
+  few, to keep the game at 60 frames a second.
+
+  Some systems (such as OpenBSD, as usually set up) sleep in steps of a
+  hundredth of a second, too coarse for 60 frames a second. There the game
+  busy-waits between frames instead, which keeps a processor busy. On a
+  fast enough machine it also sleeps every third frame, locked to those
+  steps, so it keeps exact time.
 
   The script is plain POSIX shell, and uses these commands as POSIX
   defines them, with one exception: it needs `sleep` to accept fractions of
@@ -71,9 +79,9 @@ frame is about 100 bytes.
 
 The rules and timings come from the arcade's code, via the commented
 disassembly at [computerarcheology.com][code]. The game runs at the
-arcade's 60 frames a second and works in the arcade's own coordinates (its
-224 × 256-pixel screen), converting to rows and columns only to draw. One
-column is 4 of the arcade's pixels.
+arcade's 60 frames a second, and where it can it works in the arcade's own
+coordinates (its 224 × 256-pixel screen): shots, for example, move in the
+arcade's pixels. One column is 4 of them.
 
 As in the arcade:
 
