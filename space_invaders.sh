@@ -1,6 +1,7 @@
 #!/bin/sh
 # #!/bin/sh INVADERS: a Space Invaders clone in POSIX shell
-# Emoji invaders, '¡' for bullets, Unicode ship.
+# Emoji invaders, '¡' for bullets, Unicode ship; or plain ASCII, with -a
+# (T switches between them as it runs).
 #
 # Geometry and timings follow the 1978 arcade game (224x256 pixel screen),
 # scaled so that one terminal column is ~4 pixels: the playfield is a fixed
@@ -95,16 +96,52 @@ term_size() {
 }
 
 # The game draws emoji and box/block symbols, which need a UTF-8 locale.
-# Warn (rather than draw garbage) if the locale doesn't look like UTF-8.
+# Warn (rather than draw garbage) if the locale doesn't look like UTF-8,
+# unless the game is to draw in ASCII.
 check_locale() {
+  [ $ascii -eq 1 ] && return
   loc=${LC_ALL:-${LC_CTYPE:-${LANG:-}}}
   case $loc in
     *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) return ;;
   esac
   echo "Your locale (${loc:-unset}) isn't UTF-8, so the game's emoji and" >&2
   echo "symbols may not display correctly. Try: LANG=en_US.UTF-8 $0" >&2
+  echo "Or play in plain ASCII: $0 -a" >&2
   printf 'Press Enter to play anyway, or Ctrl-C to quit. ' >&2
   read -r _ || exit 1
+}
+
+# Sets the characters things are drawn with: emoji and Unicode symbols, or
+# ASCII if $ascii is 1. Each takes the same number of columns in both. The
+# invaders' types are kept as letters (o, c and s: see spawn_wave), drawn
+# with $g_inv_o, $g_inv_c and $g_inv_s.
+set_glyphs() {
+  if [ $ascii -eq 1 ]; then
+    g_inv_o='{}' g_inv_c='<>' g_inv_s='/\'
+    g_ship='/^\' g_saucer=' oo ' g_shot='!' g_shot_boom='X'
+    g_boom_l='>' g_boom_r='<'
+    g_pl_foot='I' g_pl_mid='+' g_pl_top='T'
+    g_sh_full='#' g_sh_l='/' g_sh_r='\' g_sh_hit=':'
+    g_gnd='-' g_gnd_l='.' g_gnd_r='.' g_gnd_gaps='.'
+    g_side='|' g_pm='~'
+  else
+    g_inv_o='🐙' g_inv_c='🦀' g_inv_s='👾'
+    g_ship='╱▲╲' g_saucer=' ◜◝ ' g_shot='¡' g_shot_boom='Ж'
+    g_boom_l='›' g_boom_r='‹'
+    g_pl_foot='┴' g_pl_mid='┼' g_pl_top='┬'
+    g_sh_full='█' g_sh_l='▟' g_sh_r='▙' g_sh_hit='▒'
+    g_gnd='─' g_gnd_l='╴' g_gnd_r='╶' g_gnd_gaps='╌'
+    g_side='│' g_pm='±'
+  fi
+}
+
+# Switches between the two sets of characters (the T key), and redraws
+# everything with the new ones.
+switch_glyphs() {
+  ascii=$((1 - ascii))
+  set_glyphs
+  build_scenery
+  ground_dirty=1 shields_dirty=1 inv_rebuild=1
 }
 
 # Sets $row to the terminal row for arcade-space height $1 (in pixels).
@@ -124,6 +161,7 @@ init() {
     exit 1
   fi
   check_locale   # (it may wait for Enter, so before input is changed)
+  set_glyphs
 
   # From here the terminal is changed, so make sure it gets restored. Signals
   # exit with the usual status (128 + signal number), which runs cleanup.
@@ -232,12 +270,17 @@ layout() {
   inv_spacing=$(( (16 * field_h + 128) / 256 ))
   [ $inv_spacing -lt 1 ] && inv_spacing=1
 
-  # Scenery that doesn't change, built for each layout: side borders, score
-  # headings, controls
+  build_scenery
+}
+
+# Builds the scenery that doesn't change, for the layout and the characters
+# in use: side borders, the whole ground line, score headings, controls.
+# Then the screen is cleared and drawn afresh.
+build_scenery() {
   scenery="${ESC}[2m"
   r=$top_row
   while [ $r -lt $ground_row ]; do
-    scenery="$scenery${ESC}[$r;${x0}H│${ESC}[$r;$((right + 1))H│"
+    scenery="$scenery${ESC}[$r;${x0}H$g_side${ESC}[$r;$((right + 1))H$g_side"
     r=$((r + 1))
   done
   scenery="$scenery${ESC}[0m"
@@ -245,11 +288,10 @@ layout() {
   # erode_ground)
   line=""
   c=0
-  # Braces matter: bash 3.2 can read a multibyte character as part of a name
-  while [ $c -lt $field_w ]; do line="${line}─"; c=$((c + 1)); done
+  while [ $c -lt $field_w ]; do line="$line$g_gnd"; c=$((c + 1)); done
   ground_full="${ESC}[32m${ESC}[$ground_row;${left}H$line${ESC}[0m"
   ground_dirty=1
-  redraw_all=1   # a new layout: clear the screen and draw it afresh
+  redraw_all=1
   scenery="$scenery${ESC}[$hud_row;${sc_x}HSCORE${ESC}[$hud_row;${hi_x}HHI-SCORE"
   scenery="$scenery${ESC}[$hud_row;${wv_x}HWAVE"
   # The row below the ground shows the cannons left (see draw); the
@@ -262,7 +304,7 @@ init_game() {
   quit=0
   dbg=0          # 1 to show the frame rate (F toggles it)
   fps_hist=""    # the last 8 measured rates, in tenths of a frame a second
-  dbg_txt="--    " # (6 columns wide: see fps_stats)
+  dbg_fps="" dbg_sd=""   # the last measured rate and spread (see fps_stats)
   go_letter=7  # frames per letter of "GAME OVER", as in the arcade
   load_hiscore
   new_game     # sets up a game (so the score line has something to show) ...
@@ -418,9 +460,10 @@ handle_resize() {
 
 # ---------------------------------------------------------------------------
 # Game state
-#   invaders: space-separated "row:col:sprite:r:c" (r, c their place in the
-#             rack, 0,0 the bottom left), in the order the arcade moves
-#             them: from the bottom left, along each row and up
+#   invaders: space-separated "row:col:kind:r:c" (kind o, c or s, for octopus,
+#             crab or squid; r, c their place in the rack, 0,0 the bottom
+#             left), in the order the arcade moves them: from the bottom
+#             left, along each row and up
 #   bullets:  the player's shot, "row:col" (at most one, as in the arcade);
 #             its height in arcade space is in $bullet_y
 #   bombs:    space-separated "row:col:type:steps:height" invader shots
@@ -592,8 +635,8 @@ col_fire_table() {
 # Points by invader type, as in the arcade (top row 30, middle 20, bottom 10)
 points() {
   case $1 in
-    👾) pts=30 ;;
-    🦀) pts=20 ;;
+    s) pts=30 ;;
+    c) pts=20 ;;
     *) pts=10 ;;
   esac
 }
@@ -625,14 +668,14 @@ spawn_wave() {
   r=0
   while [ $r -lt $inv_rows ]; do
     case $r in
-      0|1) sprite="🐙" ;;   # the arcade's "octopus"
-      2|3) sprite="🦀" ;;   # "crab"
-      *) sprite="👾" ;;     # "squid"
+      0|1) kind=o ;;   # the arcade's "octopus"
+      2|3) kind=c ;;   # "crab"
+      *) kind=s ;;     # "squid"
     esac
     c=0
     while [ $c -lt $inv_cols ]; do
       inv_place $r $c $rack_px $rack_y
-      invaders="$invaders $ir:$ic:$sprite:$r:$c"
+      invaders="$invaders $ir:$ic:$kind:$r:$c"
       c=$((c + 1))
     done
     r=$((r + 1))
@@ -660,7 +703,7 @@ spawn_wave() {
 # column $2 (0 at the left) is drawn, with the formation's reference at
 # X=$3 arcade pixels and bottom row $4. As in the arcade, each invader has a
 # 16-pixel slot (the reference is the bottom-left one's left edge); the
-# emoji is 8 pixels wide, in the middle of it.
+# invader is 2 columns (8 pixels) wide, in the middle of it.
 inv_place() {
   ic=$((left + ($3 + $2 * 16 + 4) / 4))
   ir=$(($4 - $1 * inv_spacing))
@@ -765,7 +808,8 @@ save_hiscore() {
 }
 
 # Sets $move (-1, 0, 1), $fire (0/1), $restart (0/1) and $quit from all
-# keys pressed since the previous frame, and toggles $dbg on F.
+# keys pressed since the previous frame. Toggles $dbg on F, and switches
+# between emoji and ASCII on T.
 read_input() {
   move=0
   fire=0
@@ -810,6 +854,7 @@ read_input() {
       q|Q) quit=1 ;;
       r|R) restart=1 ;;
       f|F) dbg=$((1 - dbg)) ;;   # the frame-rate display (see draw)
+      t|T) switch_glyphs ;;
       h|H|a|A) move=-1 ;;
       l|L|d|D) move=1 ;;
       ' ') fire=1 ;;
@@ -837,8 +882,8 @@ move_bullets() {
 # The player's shot hitting an invader: the invader explodes and scores.
 check_collisions() {
   [ -z "$bullets" ] && return
-  # Usually no invader is in the shot's cell (or the one before, emoji being
-  # two columns wide), which is quick to see
+  # Usually no invader is in the shot's cell (or the one before,
+  # invaders being two columns wide), which is quick to see
   br=${bullets%:*}; bc=${bullets#*:}
   case "$invaders " in
     *" $br:$bc:"*|*" $br:$((bc - 1)):"*) ;;
@@ -857,7 +902,7 @@ check_collisions() {
     for b in $bullets; do
       if [ $hit -eq 0 ]; then
         br=${b%:*}; bc=${b#*:}
-        # Emoji sprites are two columns wide
+        # Invaders are two columns wide
         if [ $br -eq $ir ] && [ $bc -ge $ic ] && [ $bc -le $((ic + 1)) ]; then
           hit=1
           inv_boom=16
@@ -918,8 +963,8 @@ move_invaders() {
   # sprites are different widths in their 16-pixel slots (1C00-1C2F).
   x=$((rack_px + $5 * 16))
   case $3 in   # its leftmost and rightmost pixels in the slot
-    🐙) px_l=2 px_r=13 ;;
-    🦀) px_l=3 px_r=13 ;;
+    o) px_l=2 px_r=13 ;;
+    c) px_l=3 px_r=13 ;;
     *) px_l=4 px_r=11 ;;
   esac
   if [ $inv_dx -gt 0 ] && [ $((x + px_r)) -ge 213 ]; then
@@ -1249,12 +1294,12 @@ shield_piece() {
   eval "hp=\${sh_$1_$2:-0}"
   case $hp in
     0) g=' ' ;;
-    1) g='▒' ;;
+    1) g=$g_sh_hit ;;
     *)
       case " $shield_cells " in
-        *" $1:$2:L "*) g='▟' ;;
-        *" $1:$2:R "*) g='▙' ;;
-        *) g='█' ;;
+        *" $1:$2:L "*) g=$g_sh_l ;;
+        *" $1:$2:R "*) g=$g_sh_r ;;
+        *) g=$g_sh_full ;;
       esac ;;
   esac
   piece="${ESC}[$1;$2H$g"
@@ -1314,7 +1359,8 @@ draw() {
       busy) t="b$spin" ;;
     esac
     while [ ${#t} -lt 6 ]; do t="$t "; done
-    hud="$hud${ESC}[1;1H$t${ESC}[2;1H$dbg_txt"
+    if [ -n "$dbg_fps" ]; then d="$dbg_fps$g_pm$dbg_sd"; else d="--    "; fi
+    hud="$hud${ESC}[1;1H$t${ESC}[2;1H$d"
   else
     hud="$hud${ESC}[1;1H      ${ESC}[2;1H      "
   fi
@@ -1333,7 +1379,7 @@ draw() {
     fi
     spares=""
     i=1
-    while [ $i -lt $lives ]; do spares="$spares ╱▲╲"; i=$((i + 1)); done
+    while [ $i -lt $lives ]; do spares="$spares $g_ship"; i=$((i + 1)); done
     put $((ground_row + 1)) $((left + 1)) $((${#lives} + 4 * (lives - 1))) \
       "$n_txt$spares"
   fi
@@ -1349,11 +1395,11 @@ draw() {
       while [ $i -lt $field_w ]; do
         eval "g=\$gnd_$i"
         case $g in
-          15) g='─' ;;
+          15) g=$g_gnd ;;
           0) g=' ' ;;
-          1|2|3) g='╴' ;;     # left half only
-          4|8|12) g='╶' ;;    # right half only
-          *) g='╌' ;;         # gaps across the column
+          1|2|3) g=$g_gnd_l ;;   # left half only
+          4|8|12) g=$g_gnd_r ;;  # right half only
+          *) g=$g_gnd_gaps ;;    # gaps across the column
         esac
         ground_frame="${ground_frame}${g}"
         i=$((i + 1))
@@ -1385,7 +1431,7 @@ draw() {
     # One row, like the arcade's: sloping shoulders with a solid point.
     # These characters are in SF Mono (Terminal.app's default font), so
     # nothing is borrowed from another font.
-    put $ship_row $ship_col 3 '╱▲╲'
+    put $ship_row $ship_col 3 "$g_ship"
   fi
 
   # Shields (green, like the arcade's screen overlay) change only when hit,
@@ -1408,13 +1454,13 @@ draw() {
   # more each side (kept inside the borders).
   if [ $saucer_x -ne 0 ]; then
     if [ $saucer_hit -eq 0 ]; then
-      put $saucer_row $saucer_x 4 "${ESC}[31;4m ◜◝ ${ESC}[0m"
+      put $saucer_row $saucer_x 4 "${ESC}[31;4m$g_saucer${ESC}[0m"
     elif [ $saucer_hit -gt 72 ]; then
       el='-' er='-' tx=$((saucer_x - 1))
       if [ $tx -lt $left ]; then el=""; tx=$left; fi
       [ $((saucer_x + saucer_w)) -gt $right ] && er=""
       put $saucer_row $tx $((4 + ${#el} + ${#er})) \
-        "${ESC}[31m${el}›**‹${er}${ESC}[0m"
+        "${ESC}[31m$el$g_boom_l**$g_boom_r$er${ESC}[0m"
     else
       txt=$saucer_pts
       tx=$saucer_x
@@ -1426,7 +1472,7 @@ draw() {
   # "GAME OVER" typed out over the frozen invaders, as in the arcade, once
   # the explosion has finished. The arcade's text simply overwrote any
   # invader pixels; here an invader the letters reach is removed whole, so
-  # no half of a two-column emoji is left showing. (The text is drawn last.)
+  # no half of a two-column invader is left showing. (The text is drawn last.)
   sp=""
   if [ $game_over -eq 1 ] && [ $boom -eq 0 ]; then
     arcade_text "GAME OVER" $((go_t / go_letter))
@@ -1460,7 +1506,8 @@ draw() {
       IFS=:
       set -- $inv
       unset IFS
-      inv_frame="$inv_frame${ESC}[$1;$2H$3"
+      eval "g=\$g_inv_$3"
+      inv_frame="$inv_frame${ESC}[$1;$2H$g"
       inv_cov="$inv_cov $1;$2  $1;$(($2 + 1)) "
     done
     inv_touched=1
@@ -1470,7 +1517,8 @@ draw() {
       IFS=:
       set -- ${ev#?}
       unset IFS
-      piece="${ESC}[$1;$2H$3"
+      eval "g=\$g_inv_$3"
+      piece="${ESC}[$1;$2H$g"
       cells=" $1;$2  $1;$(($2 + 1)) "
       case $ev in
         -*)
@@ -1493,7 +1541,8 @@ draw() {
   inv_events=""
 
   for b in $bullets; do
-    put ${b%:*} ${b#*:} 1 '¡'   # dot first, as it leaves the cannon
+    # (¡ is dot first, as the shot leaves the cannon)
+    put ${b%:*} ${b#*:} 1 "$g_shot"
   done
 
   # Invader shots animate as they fall, frame chosen by row, after the
@@ -1514,9 +1563,9 @@ draw() {
         esac ;;
       p)
         case $(($1 % 4)) in
-          0) g='┴' ;;
-          3) g='┬' ;;
-          *) g='┼' ;;
+          0) g=$g_pl_foot ;;
+          3) g=$g_pl_top ;;
+          *) g=$g_pl_mid ;;
         esac ;;
       *)
         if [ $(($1 % 2)) -eq 0 ]; then g='\'; else g='/'; fi ;;
@@ -1532,7 +1581,7 @@ draw() {
   if [ $inv_boom -gt 0 ]; then
     ir=${inv_boom_at%:*}; ic=$((${inv_boom_at#*:} - 1))
     # Widths by hand: in dash, ${#} counts bytes, and › and ‹ are 3
-    el='›' em='**' er='‹' w=4
+    el=$g_boom_l em="**" er=$g_boom_r w=4
     if [ $ic -lt $left ]; then el=""; ic=$left; w=$((w - 1)); fi
     if [ $((${inv_boom_at#*:} + 2)) -gt $right ]; then er=""; w=$((w - 1)); fi
     boom_colour $ir
@@ -1540,7 +1589,7 @@ draw() {
   fi
   if [ $shot_boom -gt 0 ]; then
     boom_colour ${shot_boom_at%:*}
-    put ${shot_boom_at%:*} ${shot_boom_at#*:} 1 "${bcol}Ж${ESC}[0m"
+    put ${shot_boom_at%:*} ${shot_boom_at#*:} 1 "$bcol$g_shot_boom${ESC}[0m"
   fi
   for e in $bomb_booms; do
     t=${e#*:}
@@ -1628,7 +1677,8 @@ draw() {
           *" $zr:$zc:"*)
             pre=${invaders%%" $zr:$zc:"*}
             t=${invaders#"$pre $zr:$zc:"}
-            piece="${ESC}[$zr;${zc}H${t%%:*}"
+            eval "g=\$g_inv_${t%%:*}"
+            piece="${ESC}[$zr;${zc}H$g"
             case $layers in *"$piece"*) ;; *) layers="$layers$piece" ;; esac ;;
         esac
       done
@@ -1685,17 +1735,18 @@ draw_title() {
 
   # Each line: row offset, column ("c" to centre), icon (drawn when typing
   # reaches the line), number of leading characters to leave unspaced, text.
-  # "|" separates fields; icons use "-" for none. Text is letter-spaced to
-  # the arcade's character width, except "#!/bin/sh" in the game's name.
+  # "|" separates fields. Icons are S for the saucer, an invader's kind
+  # (see spawn_wave), or "-" for none. Text is letter-spaced to the
+  # arcade's character width, except "#!/bin/sh" in the game's name.
   tx=$((mid_c - 7))   # table text column, leaving room for the icons
   set -- \
     "0|c|-|0|PLAY" \
     "2|c|-|9|#!/bin/sh INVADERS" \
     "5|c|-|0|*SCORE ADVANCE TABLE*" \
     "7|$tx|S|0|= ? MYSTERY" \
-    "9|$tx|👾|0|= 30 POINTS" \
-    "11|$tx|🦀|0|= 20 POINTS" \
-    "13|$tx|🐙|0|= 10 POINTS"
+    "9|$tx|s|0|= 30 POINTS" \
+    "11|$tx|c|0|= 20 POINTS" \
+    "13|$tx|o|0|= 10 POINTS"
   # Typing advances a column per frame (a spaced letter every 2 frames, an
   # unspaced one every frame), so the text grows across the screen at a
   # steady pace, as in the arcade where all letters are the same width.
@@ -1711,9 +1762,9 @@ draw_title() {
     width=$((plain + 2 * (${#text} - plain) - 1))
     [ "$lc" = c ] && lc=$((mid_c - width / 2))
     case $icon in
-      S) f="$f${ESC}[$lr;$((lc - 6))H${ESC}[31;4m ◜◝ ${ESC}[0m" ;;
+      S) f="$f${ESC}[$lr;$((lc - 6))H${ESC}[31;4m$g_saucer${ESC}[0m" ;;
       -) ;;
-      *) f="$f${ESC}[$lr;$((lc - 4))H$icon" ;;
+      *) eval "g=\$g_inv_$icon"; f="$f${ESC}[$lr;$((lc - 4))H$g" ;;
     esac
     # Letters shown so far: unspaced ones take 1 column, spaced ones 2
     if [ $left_cols -le $plain ]; then
@@ -1746,7 +1797,8 @@ clock_sec() {
 
 # For the frame-rate display: adds the rate just measured ($frame_us per
 # frame, usually over 2 seconds: see pace_measure) to the last 8, and sets
-# $dbg_txt to it and the 8's standard deviation, padded to 6 columns.
+# $dbg_fps to it and $dbg_sd to the 8's standard deviation, padded so
+# that "$dbg_fps±$dbg_sd" is 6 columns.
 # (There's no sub-second clock, so single frames can't be timed: this is how
 # much the measured rates vary.) Rates are in tenths of a frame a second.
 fps_stats() {
@@ -1774,11 +1826,9 @@ fps_stats() {
   [ $sd -gt 999 ] && sd=999
   t="$((sd / 10)).$((sd % 10))"
   [ $((${#f} + 1 + ${#t})) -gt 6 ] && t=$(( (sd + 5) / 10 ))
-  # (± is one column, but dash counts its two bytes in ${#}, so the
-  # padding is worked out without it)
   pad=$((6 - ${#f} - 1 - ${#t}))
-  dbg_txt="${f}±${t}"   # (braces: bash 3.2 can read ± as part of a name)
-  while [ $pad -gt 0 ]; do dbg_txt="$dbg_txt "; pad=$((pad - 1)); done
+  dbg_fps=$f dbg_sd=$t
+  while [ $pad -gt 0 ]; do dbg_sd="$dbg_sd "; pad=$((pad - 1)); done
 }
 
 # Sleeps between frames, keeping the game at 60 fps on any machine. Most of
@@ -2049,6 +2099,14 @@ pace_busy() {
 }
 
 main() {
+  ascii=0   # 1 to draw in ASCII (see set_glyphs)
+  case "$*" in
+    "") ;;
+    -a) ascii=1 ;;
+    *)
+      echo "Usage: $0 [-a]   (-a: plain ASCII, without emoji or symbols)" >&2
+      exit 2 ;;
+  esac
   init
 
   while [ $quit -eq 0 ]; do
@@ -2125,4 +2183,4 @@ main() {
   exit 0   # the EXIT trap restores the terminal
 }
 
-main
+main "$@"

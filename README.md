@@ -25,6 +25,9 @@ to the 1978 arcade game as a grid of characters allows.
 sh space_invaders.sh
 ```
 
+For plain ASCII, without emoji or symbols, add `-a` (or press `T` while
+playing).
+
 It runs in `sh`, `dash`, `bash` (including the bash 3.2 that comes with
 macOS) and Korn shells (including OpenBSD's `sh`). In zsh, use
 `zsh --emulate sh space_invaders.sh`.
@@ -36,6 +39,7 @@ macOS) and Korn shells (including OpenBSD's `sh`). In zsh, use
 | `R` | Start (and play again after game over) |
 | `Q` | Quit |
 | `F` | Show or hide the frame rate (top left) |
+| `T` | Switch between emoji and plain ASCII |
 
 The high score is kept in `~/.space_invaders_hiscore`.
 
@@ -54,7 +58,7 @@ The high score is kept in `~/.space_invaders_hiscore`.
   You can resize the window while playing.
 - **Characters:** a UTF-8 locale and a font with emoji. The other
   characters are all in SF Mono, Terminal.app's default font, so nothing
-  needs to come from a fallback font.
+  needs to come from a fallback font. With `-a`, only ASCII is needed.
 - **Commands:** just `stty`, `sleep` and `date`. The game asks the terminal
   itself for its size (as xterm's `resize` does), so needs no `tput`. The
   only programs started during play are `sleep` and `date`, every frame or
@@ -107,8 +111,8 @@ As in the arcade:
 
 The main differences:
 
-- Invaders are emoji, so they don't switch between two pictures as they
-  move.
+- Invaders are emoji (or pairs of ASCII characters), so they don't
+  switch between two pictures as they move.
 - Positions are only as fine as a terminal cell. Where the arcade's
   outcome depends on pixels the game doesn't have (shots meeting, which
   parts of the ground erode), it's chosen with the arcade's frequencies.
