@@ -58,6 +58,11 @@ The high score is kept in `~/.space_invaders_hiscore`.
   only programs started during play are `sleep`, once a frame, and `date`,
   every few frames, to keep the game at 60 frames a second.
 
+  The script is plain POSIX shell, and uses these commands as POSIX
+  defines them, with one exception: it needs `sleep` to accept fractions of
+  a second (`sleep 0.016`), which POSIX doesn't require. macOS, Linux (GNU
+  and BusyBox) and the BSDs all do.
+
 The screen isn't cleared between frames, so it doesn't flicker even in
 terminals without synchronized output (such as Terminal.app). A typical
 frame is about 100 bytes.

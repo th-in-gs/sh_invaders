@@ -271,10 +271,8 @@ init_game() {
   pace_frames=0
   pace_check=0
   pace_sec=""       # second at which the current measurement started
-  pace_seen=$(date +%s 2>/dev/null) || pace_seen=""
-  case $pace_seen in
-    ''|*[!0-9]*) pace_seen="" ;;   # no usable clock: keep the initial delay
-  esac
+  clock_sec
+  pace_seen=$now    # (empty if there's no usable clock: keep the delay)
 }
 
 # Sets $nr to the new layout's row for row $1 of the old layout. If the
@@ -1689,27 +1687,42 @@ draw_title() {
 # Main loop
 # ---------------------------------------------------------------------------
 
+# Sets $now to the clock's seconds, 0-59, or empty if there's no clock.
+# date +%S is POSIX; seconds since 1970 (+%s) is a newer addition. The
+# leading 0 is dropped, as shell arithmetic would read 08 and 09 as (bad)
+# octal.
+clock_sec() {
+  now=$(date +%S 2>/dev/null) || now=""
+  now=${now#0}
+  case $now in ''|*[!0-9]*) now="" ;; esac
+}
+
 # Sleeps between frames, keeping the game at 60 fps on any machine. Most of
 # a frame is the sleep, and a sleep takes longer than requested: measured on
 # a Mac running macOS 27, ~1.6ms to start the sleep program plus ~3-4ms of
 # oversleep. Other systems will differ, so the actual frame rate is measured
 # and the delay adjusted to suit. POSIX sh has no sub-second clock, so the
 # rate is measured over 2-second windows that start and end on second
-# boundaries (date +%s, checked every 4th frame).
+# boundaries (clock_sec, checked every 4th frame).
+#
+# (POSIX sleep only takes whole seconds: sleeping for a fraction of one is
+# the game's one requirement beyond POSIX, and every system has it.)
 pace() {
   if [ -n "$pace_seen" ]; then
     pace_frames=$((pace_frames + 1))
     pace_check=$((pace_check + 1))
     if [ $pace_check -ge 4 ]; then
       pace_check=0
-      now=$(date +%s)
-      if [ "$now" != "$pace_seen" ]; then
+      clock_sec
+      if [ -n "$now" ] && [ "$now" != "$pace_seen" ]; then
         pace_seen=$now
+        # Seconds since the window started (the clock wraps at 60)
+        secs=$(( (now - ${pace_sec:-$now} + 60) % 60 ))
         if [ -z "$pace_sec" ]; then
           pace_sec=$now        # first second boundary: start measuring
           pace_frames=0
-        elif [ $((now - pace_sec)) -ge 2 ]; then
-          frame_us=$(( (now - pace_sec) * 1000000 / pace_frames ))
+        elif [ $secs -ge 2 ]; then
+          frame_us=$((secs * 1000000 / pace_frames))
           # Correct half the error each time, so noise doesn't make it hunt
           delay_us=$((delay_us - (frame_us - target_us) / 2))
           [ $delay_us -lt 0 ] && delay_us=0
