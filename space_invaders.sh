@@ -893,14 +893,14 @@ move_invaders() {
   # move, as soon as an invader's pixels reach X=213 or X=9. The types'
   # sprites are different widths in their 16-pixel slots (1C00-1C2F).
   x=$((rack_px + $5 * 16))
-  case $3 in
-    🐙) lo=2 hi=13 ;;
-    🦀) lo=3 hi=13 ;;
-    *) lo=4 hi=11 ;;
+  case $3 in   # its leftmost and rightmost pixels in the slot
+    🐙) px_l=2 px_r=13 ;;
+    🦀) px_l=3 px_r=13 ;;
+    *) px_l=4 px_r=11 ;;
   esac
-  if [ $inv_dx -gt 0 ] && [ $((x + hi)) -ge 213 ]; then
+  if [ $inv_dx -gt 0 ] && [ $((x + px_r)) -ge 213 ]; then
     inv_dx=-2 inv_drop=1
-  elif [ $inv_dx -lt 0 ] && [ $((x + lo)) -le 9 ]; then
+  elif [ $inv_dx -lt 0 ] && [ $((x + px_l)) -le 9 ]; then
     inv_dx=2 inv_drop=1
     [ $inv_count -eq 1 ] && inv_dx=3
   fi
