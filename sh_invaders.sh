@@ -1331,7 +1331,8 @@ check_saucer() {
 #    something that moved has left a mark on them.
 # The screen is only cleared and drawn afresh when $redraw_all is set: at
 # startup, on a resize, for a new game, back at the title screen, and when
-# the glyphs are switched (the T key).
+# the glyphs are switched (the T key). And a frame just like the last isn't
+# sent at all (see send_frame).
 # ---------------------------------------------------------------------------
 
 # Sets $piece to draw the shield cell at row $1, column $2 as it now is
@@ -1388,6 +1389,17 @@ put() {
   done
 }
 
+# Sends the frame: $head, then $1 (the layers' changes and the cells to
+# blank), then $f (the things that move, all of them every frame). If
+# there's nothing but $f, and it's the same as last time, the screen
+# already shows it, so nothing is sent, sparing the terminal the redraw.
+send_frame() {
+  if [ "$head$1" != "${ESC}[?2026h" ] || [ "$f" != "$sent_f" ]; then
+    printf '%s' "$head$1$f${ESC}[?2026l"
+    sent_f=$f
+  fi
+}
+
 draw() {
   if [ $too_small -eq 1 ]; then
     printf '%s' "${ESC}[?2026h${ESC}[H${ESC}[2JWindow too small: ${cols}x${rows}, need at least $((field_w + 2))x24. Paused (q quits).${ESC}[?2026l"
@@ -1399,7 +1411,7 @@ draw() {
     cleared=1
     prev_items=""
     # Nothing has been sent onto the cleared screen yet
-    sent_hud="" sent_ground="" sent_shields=""
+    sent_hud="" sent_ground="" sent_shields="" sent_f=""
     inv_touched=1
     redraw_all=0
   else
@@ -1486,7 +1498,7 @@ draw() {
   # The title screen only grows as it types out, so needs no tracking
   if [ $mode = title ]; then
     draw_title
-    printf '%s' "$head$layers$f${ESC}[?2026l"
+    send_frame "$layers"
     return
   fi
 
@@ -1744,7 +1756,7 @@ draw() {
     done
   fi
 
-  printf '%s' "$head$blanks$layers$f${ESC}[?2026l"
+  send_frame "$blanks$layers"
 }
 
 # Sets $pre to the first $2 characters of $1 (ASCII text) without a
