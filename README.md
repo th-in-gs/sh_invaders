@@ -60,7 +60,7 @@ The high score is kept in `~/.sh_invaders_hiscore`.
   [Let me know](mailto:jamie@montgomerie.net) if you’ve tried it!
 
 - **Characters:** You’ll want a UTF-8 locale and a monospaced font with
-  emoji that are double-character-width. (macOS’s Terminal.app works great
+  emoji that are double-character-width. (macOS’s Terminal works great
   by default!)
 
   If layout looks bad (or you just want an old-school feel!) launch with
@@ -101,7 +101,7 @@ about 0.7 KB a second (1.2 KB with synchronized output). With `-b 9600` it
 plays on a 9,600-baud line, the speed old terminals like the VT100 were
 often used at.
 
-[^terminal]: (Side-eyes to `Terminal.app`...)
+[^terminal]: (Side-eyes to macOS Terminal...)
 
 ## Arcade accurate?
 
