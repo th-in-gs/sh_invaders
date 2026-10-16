@@ -267,8 +267,9 @@ layout() {
       [ $dc -eq 0 ] && kind=L
       [ $dc -eq 5 ] && kind=R
       shield_cells="$shield_cells $shield_top:$((sx + dc)):$kind"
-      [ $dc -lt 2 ] || [ $dc -gt 3 ] &&
+      if [ $dc -lt 2 ] || [ $dc -gt 3 ]; then
         shield_cells="$shield_cells $shield_bot:$((sx + dc)):B"
+      fi
       dc=$((dc + 1))
     done
   done
@@ -420,8 +421,9 @@ handle_resize() {
   moved=""
   for b in $bullets; do
     y2row $bullet_y
-    [ $row -ge $top_row ] && [ $row -lt $ship_row ] &&
+    if [ $row -ge $top_row ] && [ $row -lt $ship_row ]; then
       moved="$row:$((${b#*:} + dx))"
+    fi
   done
   bullets=$moved
   moved=""
@@ -430,8 +432,9 @@ handle_resize() {
     set -- $m
     unset IFS
     y2row $5
-    [ $row -ge $top_row ] && [ $row -lt $ground_row ] &&
+    if [ $row -ge $top_row ] && [ $row -lt $ground_row ]; then
       moved="$moved $row:$(($2 + dx)):$3:$4:$5"
+    fi
   done
   bombs=$moved
 
@@ -513,7 +516,9 @@ reset_shields() {
 # Damages the shield cell at row $1, column $2. Returns 1 if there is no
 # shield there.
 hit_shield() {
-  [ $1 -lt $shield_top ] || [ $1 -gt $shield_bot ] && return 1
+  if [ $1 -lt $shield_top ] || [ $1 -gt $shield_bot ]; then
+    return 1
+  fi
   eval "hp=\${sh_$1_$2:-0}"
   [ $hp -eq 0 ] && return 1
   eval "sh_$1_$2=$((hp - 1))"
@@ -617,7 +622,9 @@ erode_ground() {
   shift
   for d in "$@"; do
     p=$((mid + d))
-    [ $p -lt 0 ] || [ $p -ge $((field_w * 4)) ] && continue
+    if [ $p -lt 0 ] || [ $p -ge $((field_w * 4)) ]; then
+      continue
+    fi
     eval "gnd_$((p / 4))=\$((gnd_$((p / 4)) & ~(1 << $((p % 4)))))"
   done
   ground_dirty=1
@@ -761,8 +768,10 @@ new_game() {
 # flashes.
 check_bonus() {
   [ $bonus_flash -gt 0 ] && bonus_flash=$((bonus_flash - 1))
-  [ $bonus_given -eq 0 ] && [ $score -ge 1500 ] && [ $game_over -eq 0 ] ||
+  if [ $bonus_given -ne 0 ] || [ $score -lt 1500 ] || [ $game_over -ne 0 ]
+  then
     return
+  fi
   bonus_given=1
   lives=$((lives + 1))
   bell=1
@@ -818,7 +827,9 @@ load_hiscore() {
   hi=0
   hi_file=""
   [ -n "${HOME:-}" ] && hi_file="$HOME/.sh_invaders_hiscore"
-  [ -n "$hi_file" ] && [ -r "$hi_file" ] || return
+  if [ -z "$hi_file" ] || [ ! -r "$hi_file" ]; then
+    return
+  fi
   { read -r hi < "$hi_file"; } 2>/dev/null || hi=0
   case $hi in
     ''|*[!0-9]*) hi=0 ;;
@@ -1078,9 +1089,13 @@ drop_bomb() {
   bt=$turn
   # A type whose last shot is still blowing up can't fire yet
   case "$bomb_booms" in *":$bt:"*) return ;; esac
-  [ $bt = p ] && [ $inv_count -eq 1 ] && return
+  if [ $bt = p ] && [ $inv_count -eq 1 ]; then
+    return
+  fi
   # The saucer uses the squiggly shot's slot in the arcade
-  [ $bt = s ] && [ $saucer_x -ne 0 ] && return
+  if [ $bt = s ] && [ $saucer_x -ne 0 ]; then
+    return
+  fi
 
   reload_bombs
   for m in $bombs; do
@@ -1129,7 +1144,9 @@ drop_bomb() {
   # Sprites are two columns wide; the rolling shot falls from whichever
   # half is nearer the player, the others from the left half
   sc=$colx
-  [ $bt = r ] && [ $((ship_col + 1)) -gt $colx ] && sc=$((colx + 1))
+  if [ $bt = r ] && [ $((ship_col + 1)) -gt $colx ]; then
+    sc=$((colx + 1))
+  fi
   # A new shot starts below the invader, with 1 step made (as in the arcade)
   rowy $((sr + 1))
   bombs="$bombs $((sr + 1)):$sc:$bt:1:$ry"
@@ -1258,7 +1275,9 @@ update_saucer() {
   fi
 
   if [ $saucer_x -eq 0 ]; then
-    [ $saucer_pending -eq 1 ] && [ $inv_count -ge 8 ] || return
+    if [ $saucer_pending -ne 1 ] || [ $inv_count -lt 8 ]; then
+      return
+    fi
     case $bombs in
       *:s:*) return ;;
     esac
@@ -1967,7 +1986,9 @@ spin_wait() {
 pace_measure() {
   [ -n "$pace_seen" ] || return 0
   clock_sec
-  { [ -n "$now" ] && [ "$now" != "$pace_seen" ]; } || return 0
+  if [ -z "$now" ] || [ "$now" = "$pace_seen" ]; then
+    return 0
+  fi
   pace_seen=$now
   # Seconds since the measurement started (the clock wraps at 60)
   secs=$(( (now - ${pace_sec:-$now} + 60) % 60 ))
@@ -2062,8 +2083,10 @@ pace_cal() {
     # of the count, so the next measurement gives a measurable difference.
     spin_ns=0
     i=$((spin * target_us / frame_us))
-    [ $(( (spin - i) * 4)) -lt $spin ] && [ $(( (i - spin) * 4)) -lt $spin ] &&
+    if [ $(( (spin - i) * 4)) -lt $spin ] &&
+       [ $(( (i - spin) * 4)) -lt $spin ]; then
       i=$((spin * 3 / 4))
+    fi
     spin=$i
     [ $spin -lt 1 ] && spin=1
     return
