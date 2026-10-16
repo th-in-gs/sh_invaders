@@ -197,10 +197,35 @@ With `-b 9600`, play averaged about 600–700 bytes a second, with about
 2 frames in 5 sent: the screen updated every frame or two
 usually, and within 5 frames 9 times in 10.
 
-These were measured from the game's output, in about a minute of play.
-The same runs checked the scheme: every frame the game sent was replayed
-in a terminal emulator (pyte), and compared with a full redraw of the
-game's state at that frame (except while the scenery was still to come,
-when the screen is meant to differ). The screens matched every time,
-under dash, bash, ksh and zsh, in ASCII and emoji, with and without
-synchronized updates and a line speed.
+These were measured with `check.py` (below), in about a minute of play.
+
+## Checking changes
+
+`check.py` here checks that the screen is right, and measures what's sent.
+It plays the game in a pseudo-terminal for a while, typing scripted keys,
+with a few lines added to a copy of the script so that every frame it logs
+two things: what it sent, and a full redraw of its state at that frame.
+Both are replayed in a terminal emulator (pyte), and the screens compared
+after every frame sent (except while the scenery is still to come, when
+they're meant to differ). Sending only the changes is right if they always
+match.
+
+It needs Python 3 and pyte (`pip install pyte`):
+
+```
+docs/screen-updates/check.py                     # dash, 60 s of play
+docs/screen-updates/check.py --shell bash -- -b 9600
+docs/screen-updates/check.py --shell 'zsh --emulate sh' --sync
+```
+
+Arguments after `--` go to the game. `--sync` has the pretend terminal say
+it does synchronized updates, and `--first-keys t` switches characters
+just after starting (so with `-b`, to emoji). The exit status is 1 if any
+screen didn't match. With every change to drawing so far, the screens have
+matched every time, under dash, bash, ksh and zsh, in ASCII and emoji,
+with and without synchronized updates and a line speed. (Breaking the
+blanking of cells left behind, as a test of the test, gives mismatches
+within a few seconds.)
+
+It hooks into `send_frame`, and into where `draw` skips frames to keep to a
+line speed. If they change shape, it says so rather than checking nothing.
