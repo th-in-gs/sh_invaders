@@ -849,6 +849,34 @@ end_game() {
   fi
 }
 
+# Sets $sp to as much of "GAME OVER" as has typed out, letter-spaced (see
+# arcade_text), and $gx to the column it starts at, on row $go_row.
+game_over_text() {
+  arcade_text "GAME OVER" $((go_t / go_letter))
+  gx=$((left + field_w / 2 - 8))
+}
+
+# "GAME OVER" types out over the frozen invaders, as in the arcade (and is
+# drawn last: see draw). The arcade's text simply overwrote any invader
+# pixels; here an invader the letters reach is removed whole, so no half of
+# a two-column invader is left showing.
+type_game_over() {
+  game_over_text
+  [ -n "$sp" ] || return 0
+  gend=$((gx + ${#sp} - 1))
+  survivors=""
+  for inv in $invaders; do
+    ir=${inv%%:*}; t=${inv#*:}; ic=${t%%:*}
+    if [ $ir -eq $go_row ] && [ $((ic + 1)) -ge $gx ] && [ $ic -le $gend ]
+    then
+      inv_events="$inv_events -$inv"
+      continue
+    fi
+    survivors="$survivors $inv"
+  done
+  invaders=$survivors
+}
+
 # The high score is kept in a file in the home directory. Reading and
 # writing use only shell built-ins; failures (no HOME, read-only home) are
 # ignored and just mean the high score isn't kept.
@@ -1703,28 +1731,11 @@ draw() {
     fi
   fi
 
-  # "GAME OVER" typed out over the frozen invaders, as in the arcade, once
-  # the explosion has finished. The arcade's text simply overwrote any
-  # invader pixels; here an invader the letters reach is removed whole, so
-  # no half of a two-column invader is left showing. (The text is drawn last.)
+  # "GAME OVER", as far as it has typed out once the explosion has finished
+  # (see type_game_over). (The text is drawn last.)
   sp=""
   if [ $game_over -eq 1 ] && [ $boom -eq 0 ]; then
-    arcade_text "GAME OVER" $((go_t / go_letter))
-    gx=$((left + field_w / 2 - 8))
-    if [ -n "$sp" ]; then
-      gend=$((gx + ${#sp} - 1))
-      survivors=""
-      for inv in $invaders; do
-        ir=${inv%%:*}; t=${inv#*:}; ic=${t%%:*}
-        if [ $ir -eq $go_row ] && [ $((ic + 1)) -ge $gx ] && [ $ic -le $gend ]
-        then
-          inv_events="$inv_events -$inv"
-          continue
-        fi
-        survivors="$survivors $inv"
-      done
-      invaders=$survivors
-    fi
+    game_over_text
   fi
 
   # The formation: $inv_frame draws it all and $inv_cov lists its cells.
@@ -2422,6 +2433,7 @@ main() {
     elif [ $game_over -eq 1 ]; then
       # Type "GAME OVER", pause two seconds, then the title screen
       go_t=$((go_t + 1))
+      type_game_over
       if [ $go_t -ge $((9 * go_letter + 120)) ]; then
         mode=title
         redraw_all=1
