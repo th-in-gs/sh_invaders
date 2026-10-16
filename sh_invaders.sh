@@ -43,6 +43,10 @@ field_w=56  # 224 arcade pixels at ~4 pixels per column
 # The cursor is hidden and the alternate screen used with the standard
 # escape sequences, like everything the game draws (tput's names for them
 # are terminfo's, not POSIX's, and would need a program run for each).
+# The cursor is hidden after the switch to the alternate screen, as some
+# terminals keep its visibility per screen, and again after a resize, as some
+# show it again then (it'd sit after whatever was drawn last, often the
+# cannon's shot).
 #
 # cleanup runs from the EXIT trap, so the terminal is restored however the
 # game ends: quitting, a signal, or the shell stopping on an error (set -u).
@@ -199,7 +203,7 @@ init() {
   too_small=0
   trap 'resized=1' WINCH 2>/dev/null || true
 
-  printf '%s' "${ESC}[?25l${ESC}[?1049h"   # hide the cursor; alternate screen
+  printf '%s' "${ESC}[?1049h${ESC}[?25l"   # alternate screen; hide the cursor
   alt_screen=1
   layout
   init_game
@@ -366,6 +370,7 @@ remap_row() {
 # the game pauses (keeping the old layout) until it is big enough again.
 handle_resize() {
   resized=0
+  printf '%s' "${ESC}[?25l"   # hide the cursor again (see cleanup)
   o_rows=$rows o_cols=$cols
   if ! term_size; then
     rows=$o_rows cols=$o_cols   # carry on as we were
