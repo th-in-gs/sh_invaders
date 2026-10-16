@@ -86,7 +86,8 @@ right:
 
 Programs mostly send reverse index only at the top of the screen, to
 scroll back (terminfo's `sr`), and use `ESC[A` to move up (`cuu1`), so
-that's the well-trodden path. It costs about 2% more bytes in play.
+that's the well-trodden path. It costs about 2% more bytes in play. On a
+terminal known to get reverse index right, `-r` uses it again.
 
 ### Synchronized updates
 

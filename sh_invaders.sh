@@ -1520,17 +1520,17 @@ dirty_unless_in() {
 # moves are all ones the VT100 had: to a row and column (ESC[r;cH), up,
 # down, right or left (ESC[nA, B, C, D; n can be left out if 1), and
 # backspace. (Not reverse index, ESC M, though it's a byte shorter for one
-# up: some terminals, Prompt for one, scroll the screen with it.) The
-# attributes are changed only if they differ from the last text's
-# ($cur_a). (Text with attributes of its own sets them and puts them
-# back to none itself.)
+# up, unless -r says to: some terminals, Prompt for one, scroll the screen
+# with it. $up_one is the one to use.) The attributes are changed only if
+# they differ from the last text's ($cur_a). (Text with attributes of its
+# own sets them and puts them back to none itself.)
 emit() {
   mv="${ESC}[$1;$2H"
   if [ $cur_r -gt 0 ]; then
     dr=$(($1 - cur_r)) dc=$(($2 - cur_c))
     case $dr in
       0) v="" ;;
-      -1) v="${ESC}[A" ;;
+      -1) v=$up_one ;;
       1) v="${ESC}[B" ;;
       -*) v="${ESC}[${dr#-}A" ;;
       *) v="${ESC}[${dr}B" ;;
@@ -2522,20 +2522,24 @@ pace_busy() {
 }
 
 usage() {
-  echo "Usage: $0 [-a] [-b baud]" >&2
+  echo "Usage: $0 [-a] [-b baud] [-r]" >&2
   echo "  -a       plain ASCII, without emoji or symbols" >&2
   echo "  -b baud  send no more than a serial line of that speed carries" >&2
   echo "           (for a real terminal on a serial line, say -b 9600);" >&2
   echo "           draws in ASCII, as -a" >&2
+  echo "  -r       move the cursor up a line with reverse index (ESC M), a" >&2
+  echo "           byte shorter than ESC[A; some terminals get it wrong" >&2
   exit 2
 }
 
 main() {
   ascii=0   # 1 to draw in ASCII (see set_glyphs)
   baud=0    # the line's speed, to keep within (see draw); 0 for no limit
+  up_one="${ESC}[A"   # how to move the cursor up a line (see emit)
   while [ $# -gt 0 ]; do
     case $1 in
       -a) ascii=1 ;;
+      -r) up_one="${ESC}M" ;;
       -b)
         case ${2-} in
           ''|*[!0-9]*) usage ;;
