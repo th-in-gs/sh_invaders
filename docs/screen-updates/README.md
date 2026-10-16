@@ -21,7 +21,6 @@ and `[`:
 | `ESC[?2026l` | 8 | End the update: the terminal shows the changes all at once |
 | `ESC[row;colH` | 6–8 | Move the cursor to row, column (counting from 1) |
 | `ESC[nA`, `B`, `C`, `D` | 3–5 | Move the cursor up, down, right or left n places (n left out if 1) |
-| `ESC M` | 2 | Move the cursor up one place (reverse index) |
 | `BS` (`0x08`) | 1 | Move the cursor left one place |
 | `ESC[32m`, `ESC[31;4m`, `ESC[2m` … | 4–7 | Set colors and attributes: green, red, underline, dim, reverse video |
 | `ESC[m`, `ESC[0m` | 3, 4 | Reset the colors and attributes |
@@ -37,13 +36,13 @@ synchronized updates):
 ```
 ESC[14;31H      cursor to row 14, column 31    8 bytes
 ␠               a space: blank the old shot    1 byte
-ESC M BS        cursor up one, and back one    3 bytes
+ESC[A BS        cursor up one, and back one    4 bytes
 ¡               the shot (2 bytes in UTF-8)    2 bytes
                                               ─────────
-                                              14 bytes
+                                              15 bytes
 ```
 
-Only 3 of those 14 bytes are the characters themselves (the space, and
+Only 3 of those 15 bytes are the characters themselves (the space, and
 the shot's 2). The rest are cursor moves: most of a frame is the overhead
 around a few characters. Where the terminal does synchronized updates,
 the markers add 16 bytes to every frame sent.
@@ -54,8 +53,7 @@ The game keeps track of where the cursor is, from where the last text it
 wrote ended, and moves it to the next change the shortest way: not at all
 if it's already there, up, down, left or right if that's shorter, and to
 the row and column otherwise. It uses only moves the VT100 had, so it
-works on old terminals too. (Reverse index would scroll the screen if the
-cursor were on the top row, but nothing moves up from there.)
+works on old terminals too. (Not reverse index, though: see below.)
 
 Changes are sent in order of row and column, so the cursor mostly runs on
 from one to the next: when an invader moves left, say, it's drawn and
@@ -69,6 +67,26 @@ Where the cursor is isn't known after a part of the scenery is sent (the
 moves are in its text), after a full redraw, or after text that reaches
 the terminal's last column (where terminals differ over what the cursor
 does next). The next move is then always to the row and column.
+
+### Why not reverse index
+
+Reverse index (`ESC M`) moves the cursor up one line, a byte shorter than
+`ESC[A`, and the game used it for a while. But terminals don't all get it
+right:
+
+- **Prompt** (Panic's terminal; 3.5.3 on macOS 27, locally and over SSH)
+  scrolls the whole screen down a line on reverse index when it's on the
+  alternate screen, which the game draws on, even with the cursor nowhere
+  near the top. In the game the screen drifted down a line at a time, and
+  things were drawn in the wrong places. After a reverse index, its
+  cursor position reports are wrong too (row or column 0).
+- **Others** differ in its corners: Konsole ignores it with the cursor
+  outside the scroll region, and some emulators have mishandled scroll
+  regions or taken it for a VT52 command.
+
+Programs mostly send reverse index only at the top of the screen, to
+scroll back (terminfo's `sr`), and use `ESC[A` to move up (`cuu1`), so
+that's the well-trodden path. It costs about 2% more bytes in play.
 
 ### Synchronized updates
 
@@ -208,8 +226,8 @@ frames: see above).
 | | Without synchronized updates | With them |
 |---|---|---|
 | A frame with nothing changed | 0 | 0 |
-| The player's shot climbing a row | about 14 bytes | about 30 bytes |
-| The median frame sent in play | about 14 bytes | about 30 bytes |
+| The player's shot climbing a row | about 15 bytes | about 31 bytes |
+| The median frame sent in play | about 15 bytes | about 31 bytes |
 | On average in play | about 0.7 KB a second | about 1.2 KB a second |
 | A frame as the title types out | about 2 bytes | about 18 bytes |
 | A full redraw (in ASCII) | about 0.8 KB for the title, 1.2 KB for a new game | the same, plus 16 bytes |

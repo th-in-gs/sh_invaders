@@ -1518,10 +1518,11 @@ dirty_unless_in() {
 # (see todo_add), moving the cursor there the shortest way from where the
 # last text left it ($cur_r, $cur_c; $cur_r is 0 if that isn't known). The
 # moves are all ones the VT100 had: to a row and column (ESC[r;cH), up,
-# down, right or left (ESC[nA, B, C, D; n can be left out if 1), up one
-# (ESC M, reverse index: it would scroll only from the top row) and
-# backspace. The attributes are changed only if they differ from the last
-# text's ($cur_a). (Text with attributes of its own sets them and puts them
+# down, right or left (ESC[nA, B, C, D; n can be left out if 1), and
+# backspace. (Not reverse index, ESC M, though it's a byte shorter for one
+# up: some terminals, Prompt for one, scroll the screen with it.) The
+# attributes are changed only if they differ from the last text's
+# ($cur_a). (Text with attributes of its own sets them and puts them
 # back to none itself.)
 emit() {
   mv="${ESC}[$1;$2H"
@@ -1529,7 +1530,7 @@ emit() {
     dr=$(($1 - cur_r)) dc=$(($2 - cur_c))
     case $dr in
       0) v="" ;;
-      -1) v="${ESC}M" ;;
+      -1) v="${ESC}[A" ;;
       1) v="${ESC}[B" ;;
       -*) v="${ESC}[${dr#-}A" ;;
       *) v="${ESC}[${dr}B" ;;
