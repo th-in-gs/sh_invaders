@@ -21,6 +21,12 @@ Needs Python 3 and pyte (pip install pyte). Run from anywhere:
 
 Arguments after -- go to the game. The exit status is 1 if any screen
 didn't match.
+
+With --frames N, the keys are scripted by frame number instead of typed in
+real time, and the game runs flat out (no pacing): so every run plays the
+same game, and versions of the script can be compared byte for byte. With
+--bench as well, nothing is logged or checked; it reports the CPU time the
+game took, for comparing how much work versions of the drawing do.
 """
 
 import argparse
@@ -45,19 +51,44 @@ GAME = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 #   K  skipped to keep to a line speed (-b): not compared
 ORACLE = r'''
 # --- added by docs/screen-updates/check.py ---
+oracle_items() {   # adds a list of items (row;col;width;attr text) to $o
+  IFS=$NL
+  for p in $1; do
+    unset IFS
+    k=${p%% *}
+    r=${k%%";"*}; t=${k#*";"}; c=${t%%";"*}; a=${t##*";"}
+    o="$o${ESC}[0m${a:+${ESC}[${a}m}${ESC}[$r;${c}H${p#* }${ESC}[0m"
+  done
+  unset IFS
+}
 oracle_log() {
-  allp=""
+  o="${ESC}[0m${ESC}[H${ESC}[2J$scenery${ESC}[0m"
+  oracle_items "$hud"
+  o="$o${ESC}[32m${ESC}[$ground_row;${left}H"
+  if [ $mode = title ]; then
+    o="$o$ground_line"
+  else
+    i=0
+    while [ $i -lt $field_w ]; do ground_glyph $i; o="$o$g"; i=$((i + 1)); done
+  fi
+  o="$o${ESC}[0m"
+  if [ $mode != title ]; then
+    o="$o${ESC}[32m"
+    for s in $shield_cells; do
+      qr=${s%%:*}; t=${s#*:}
+      shield_piece $qr ${t%%:*}
+      o="$o$piece"
+    done
+    o="$o${ESC}[0m$inv_frame"
+  fi
   IFS=$NL
   for p in $pieces; do
     unset IFS
     k=${p%% *}
     r=${k%%";"*}; c=${k#*";"}; c=${c%";"*}
-    allp="$allp${ESC}[$r;${c}H${p#* }"
+    o="$o${ESC}[$r;${c}H${p#* }"
   done
   unset IFS
-  o="${ESC}[0m${ESC}[H${ESC}[2J$scenery${ESC}[0m$hud$ground_frame"
-  [ $mode = title ] || o="$o$shield_frame$inv_frame"
-  o="$o$allp"
   k=$1
   [ -n "${scenery_todo-}" ] && [ "$k" = S ] && k=P
   printf '%s\036%s\036%s\036\037' "$k" "$o" "${out_now-}" >&3
@@ -67,6 +98,39 @@ oracle_log() {
 
 SKIP = ("    if [ $credit -lt 0 ] && [ $redraw_all -eq 0 ]; then\n"
         "      return\n")
+
+
+READ = "  IFS= read -r keys\n"
+PACE = "    draw\n    pace\n"
+
+
+def scripted(src, args):
+    """With --frames: the keys come from a script by frame number (one of
+    --keys every 9 frames, after R at the end of --title-wait), the game
+    quits after the frames given, and pacing is off."""
+    if src.count(READ) != 1 or src.count(PACE) != 1:
+        sys.exit("check.py: can't find read_input's read, or the main "
+                 "loop's draw and pace, to hook into")
+    start = int(args.title_wait * 60)
+    src = src.replace(READ, READ + "  check_keys\n")
+    src = src.replace(PACE, "    draw\n")
+    keys = ''.join(f"ck_{i}='{k}'\n" for i, k in enumerate(args.keys)
+                   if k != "'")
+    code = f'''
+# --- added by docs/screen-updates/check.py: scripted keys ---
+{keys}check_keys() {{
+  keys=""
+  if [ $frame -eq {start} ]; then
+    keys="r{args.first_keys}"
+  elif [ $frame -gt {start} ] && [ $(( (frame - {start}) % 9)) -eq 0 ]; then
+    eval "keys=\\$ck_$(( (frame - {start}) / 9 % {len(args.keys)}))"
+  fi
+  [ $frame -ge {start + args.frames} ] && quit=1
+  return 0
+}}
+'''
+    i = src.rindex('\nmain "$@"')
+    return src[:i] + code + src[i:]
 
 
 def instrument(src):
@@ -90,20 +154,29 @@ def instrument(src):
 def play(script, log, args):
     """Runs the game in a pseudo-terminal, as a terminal would: answering
     its size query (and, with --sync, its synchronized-output query), and
-    typing the keys. Returns the start of what it printed."""
+    typing the keys. Returns the start of what it printed, and the game's
+    resource usage."""
     rows, cols = args.size
     pid, fd = pty.fork()
     if pid == 0:
         f3 = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
         os.dup2(f3, 3)
         os.set_inheritable(3, True)
-        os.environ.update(TERM='xterm-256color', LANG='en_US.UTF-8')
+        # (HOME too, so test games can't touch the player's high score)
+        os.environ.update(TERM='xterm-256color', LANG='en_US.UTF-8',
+                          HOME=os.path.dirname(log))
         shell = args.shell.split()
+        if args.bench and os.path.exists('/usr/bin/time') \
+                and sys.platform == 'darwin':
+            # macOS's time -l also counts the instructions run, which
+            # (unlike times) other work on the machine hardly affects
+            shell = ['/usr/bin/time', '-l'] + shell
         os.execvp(shell[0], shell + [script] + args.game_args)
     import fcntl
     import termios
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
     printed = []
+    tail = [b'']
 
     def pump(secs):
         end = time.time() + secs
@@ -116,6 +189,7 @@ def play(script, log, args):
                     return False
                 if len(printed) < 4:
                     printed.append(data)
+                tail[0] = (tail[0] + data)[-4096:]
                 if args.sync and b'\x1b[?2026$p' in data:
                     os.write(fd, b'\x1b[?2026;2$y')
                 for _ in range(data.count(b'\x1b[6n')):
@@ -129,20 +203,28 @@ def play(script, log, args):
         except OSError:
             return False
 
-    pump(args.title_wait)
-    type_('r' + args.first_keys)
-    start, i = time.time(), 0
-    while time.time() - start < args.seconds:
-        if not pump(0.15) or not type_(args.keys[i % len(args.keys)]):
-            break
-        i += 1
-    type_('q')
-    end = time.time() + 3
+    if args.frames:
+        # The keys are scripted: just wait for the game to finish
+        end = time.time() + 600
+        typed = False
+    else:
+        pump(args.title_wait)
+        type_('r' + args.first_keys)
+        start, i = time.time(), 0
+        while time.time() - start < args.seconds:
+            if not pump(0.15) or not type_(args.keys[i % len(args.keys)]):
+                break
+            i += 1
+        type_('q')
+        end = time.time() + 3
+    usage = None
     while time.time() < end:
         pump(0.2)
-        if os.waitpid(pid, os.WNOHANG)[0]:
+        done, _, usage = os.wait4(pid, os.WNOHANG)
+        if done:
             break
-    return b''.join(printed).decode('utf-8', 'replace')
+    play.tail = tail[0].decode('utf-8', 'replace')
+    return b''.join(printed).decode('utf-8', 'replace'), usage
 
 
 def frames(log):
@@ -157,6 +239,15 @@ def in_play(redraw):
 
 
 def report_traffic(recs):
+    title = [len(a.encode()) for k, o, a in recs
+             if ('P R E S S' in o or 'I N V A D' in o) and a]
+    if title:
+        print(f'title screen: {len(title)} frames sent, {sum(title)} bytes, '
+              f'median {statistics.median(title):.0f}')
+    redraws = [len(a.encode()) for k, o, a in recs if '\x1b[2J' in a]
+    if redraws:
+        print(f'full redraws: {len(redraws)}, bytes: '
+              f'{", ".join(map(str, redraws))}')
     play_ = [(k, o, a) for k, o, a in recs
              if in_play(o) and '\x1b[2J' not in a]
     sent = [len(a.encode()) for k, o, a in play_ if a]
@@ -231,21 +322,51 @@ def main():
                         'switch to ASCII or back')
     p.add_argument('--size', type=int, nargs=2, default=(32, 100),
                    metavar=('ROWS', 'COLS'), help='terminal size (32 100)')
+    p.add_argument('--frames', type=int, default=0,
+                   help='script the keys by frame, for this many frames of '
+                        'play, with no pacing (see above)')
+    p.add_argument('--bench', action='store_true',
+                   help='with --frames: report CPU time; no logging or check')
     p.add_argument('--game', default=GAME, help='the script to check')
     p.add_argument('game_args', nargs='*', help='arguments for the game')
     args = p.parse_args()
 
-    try:
-        import pyte  # noqa: F401  (checked now, rather than after playing)
-    except ImportError:
-        sys.exit('check.py needs pyte: pip install pyte')
+    if args.bench and not args.frames:
+        sys.exit('check.py: --bench needs --frames')
+    if not args.bench:
+        try:
+            import pyte  # noqa: F401  (checked now, not after playing)
+        except ImportError:
+            sys.exit('check.py needs pyte: pip install pyte')
 
     with tempfile.TemporaryDirectory() as tmp:
         script = os.path.join(tmp, 'sh_invaders.sh')
         log = os.path.join(tmp, 'frames.log')
+        src = open(args.game).read()
+        if args.frames:
+            src = scripted(src, args)
+        if not args.bench:
+            src = instrument(src)
         with open(script, 'w') as f:
-            f.write(instrument(open(args.game).read()))
-        printed = play(script, log, args)
+            f.write(src)
+        printed, usage = play(script, log, args)
+        if args.bench:
+            if usage is None:
+                sys.exit('check.py: the game didn\'t finish')
+            n = int(args.title_wait * 60) + args.frames
+            times = re.search(r'([\d.]+) real\s+([\d.]+) user\s+([\d.]+) sys',
+                              play.tail)
+            if times:     # (run under time: its figures are the game's)
+                user, system = float(times[2]), float(times[3])
+            else:
+                user, system = usage.ru_utime, usage.ru_stime
+            print(f'cpu: {user:.2f} s user + {system:.2f} s system for {n} '
+                  f'frames: {1e6 * (user + system) / n:.0f} µs a frame')
+            ins = re.search(r'(\d+)\s+instructions retired', play.tail)
+            if ins:
+                print(f'instructions: {int(ins[1]) / n / 1000:.0f} thousand '
+                      f'a frame')
+            return
         recs = frames(log)
     if not recs:
         sys.exit('check.py: the game logged no frames. It printed:\n'

@@ -217,7 +217,7 @@ init() {
   resized=0
   too_small=0
   sent_small=""   # the "too small" message last sent (see draw)
-  cur_r=0         # where the cursor is isn't known yet (see emit)
+  cur_r=0 cur_a="" # where the cursor is isn't known yet (see emit)
   scenery_todo="" # scenery parts still to send (see draw)
   trap 'resized=1' WINCH 2>/dev/null || true
 
@@ -331,7 +331,7 @@ build_scenery() {
   line=""
   c=0
   while [ $c -lt $field_w ]; do line="$line$g_gnd"; c=$((c + 1)); done
-  ground_full="${ESC}[32m${ESC}[$ground_row;${left}H$line${ESC}[0m"
+  ground_line=$line
   ground_dirty=1
   redraw_all=1
   t="${ESC}[$hud_row;${sc_x}HSCORE${ESC}[$hud_row;${hi_x}HHI-SCORE"
@@ -611,6 +611,19 @@ tick_explosions() {
   [ $inv_boom -gt 0 ] && inv_boom=$((inv_boom - 1))
   [ $shot_boom -gt 0 ] && shot_boom=$((shot_boom - 1))
   return 0
+}
+
+# Sets $g to draw column $1 of the ground line as its 4 pixels now are, as
+# best a character can.
+ground_glyph() {
+  eval "g=\$gnd_$1"
+  case $g in
+    15) g=$g_gnd ;;
+    0) g=' ' ;;
+    1|2|3) g=$g_gnd_l ;;   # left half only
+    4|8|12) g=$g_gnd_r ;;  # right half only
+    *) g=$g_gnd_gaps ;;    # gaps across the column
+  esac
 }
 
 # Restores the ground line, as the arcade does for each wave (0804); a lost
@@ -1387,8 +1400,10 @@ check_saucer() {
 #    frame and nothing covers now, and draws just the things that have
 #    changed (or that something else is drawn over).
 #  - Layers that change only now and then (the score, the ground, the
-#    shields, the formation) are sent only when they change, or when
-#    something that moved has left a mark on them.
+#    shields, the formation) send just the parts that have changed, or that
+#    something that moved has left a mark on.
+#  - The changes are sent in order of row and column, so the cursor mostly
+#    runs on from one to the next (see add_item and emit).
 # The screen is only cleared and drawn afresh when $redraw_all is set: at
 # startup, on a resize, for a new game, back at the title screen, and when
 # the glyphs are switched (the T key). A frame with nothing changed isn't
@@ -1452,6 +1467,29 @@ put() {
   done
 }
 
+# As put, for text that only grows as it types out (the title's, and "GAME
+# OVER"): when it has, only what's new is sent (see grown).
+put_grow() {
+  put "$@"
+  grows="$grows $1;$2 "
+}
+
+# For a piece at row $fr, column $fc ($fw wide, drawn with $text) that's to
+# be sent: if it's text that only grows (see put_grow), and it has only
+# grown since it was last sent, sets $fc, $fw and $text to just what's new.
+# Not if a layer has been drawn in its row this frame, in case it's over
+# the text. (Nothing else moves while these texts type out.)
+grown() {
+  case $grows in *" $fr;$fc "*) ;; *) return 1 ;; esac
+  case $lay_cov in *" $fr;"*) return 1 ;; esac
+  old="$NL$prev_pieces"
+  case $old in *"$NL$fr;$fc;"*) ;; *) return 1 ;; esac
+  old=${old#*"$NL$fr;$fc;"}; old=${old%%"$NL"*}
+  ow=${old%% *}; old=${old#* }
+  case $text in "$old"?*) ;; *) return 1 ;; esac
+  text=${text#"$old"} fc=$((fc + ow)) fw=$((fw - ow))
+}
+
 # Sets $cells to the cells " row;col " covered by a piece "row;col;width"
 # ($1).
 piece_cells() {
@@ -1476,18 +1514,22 @@ dirty_unless_in() {
   unset IFS
 }
 
-# Adds $4 to $out at row $1, column $2, $3 columns wide, moving the cursor
-# there the shortest way from where the last text left it ($cur_r,
-# $cur_c; $cur_r is 0 if that isn't known). The moves are all ones the
-# VT100 had: to a row and column (ESC[r;cH), up, down, right or left
-# (ESC[nA, B, C, D; n can be left out if 1), and backspace.
+# Adds $4 to $out at row $1, column $2, $3 columns wide, in attributes $5
+# (see todo_add), moving the cursor there the shortest way from where the
+# last text left it ($cur_r, $cur_c; $cur_r is 0 if that isn't known). The
+# moves are all ones the VT100 had: to a row and column (ESC[r;cH), up,
+# down, right or left (ESC[nA, B, C, D; n can be left out if 1), up one
+# (ESC M, reverse index: it would scroll only from the top row) and
+# backspace. The attributes are changed only if they differ from the last
+# text's ($cur_a). (Text with attributes of its own sets them and puts them
+# back to none itself.)
 emit() {
   mv="${ESC}[$1;$2H"
   if [ $cur_r -gt 0 ]; then
     dr=$(($1 - cur_r)) dc=$(($2 - cur_c))
     case $dr in
       0) v="" ;;
-      -1) v="${ESC}[A" ;;
+      -1) v="${ESC}M" ;;
       1) v="${ESC}[B" ;;
       -*) v="${ESC}[${dr#-}A" ;;
       *) v="${ESC}[${dr}B" ;;
@@ -1501,6 +1543,16 @@ emit() {
     esac
     [ ${#v} -lt $((${#mv} - ${#h})) ] && mv=$v$h
   fi
+  if [ "${5-}" != "$cur_a" ]; then
+    if [ -z "${5-}" ]; then
+      mv="$mv${ESC}[m"
+    elif [ -z "$cur_a" ]; then
+      mv="$mv${ESC}[${5}m"
+    else
+      mv="$mv${ESC}[0;${5}m"
+    fi
+    cur_a=${5-}
+  fi
   out="$out$mv$4"
   cur_r=$1 cur_c=$(($2 + $3))
   # Text that reaches the last column leaves the cursor waiting to wrap,
@@ -1509,16 +1561,88 @@ emit() {
   return 0
 }
 
-# Adds $1 to $out, after which where the cursor is isn't known.
+# Adds $1 to $out, after which where the cursor is isn't known. ($1 must
+# end with no attributes set.)
 emit_raw() {
+  [ -n "$cur_a" ] && out="$out${ESC}[m"
   out="$out$1"
-  cur_r=0
+  cur_r=0 cur_a=""
+}
+
+# Adds an item to $todo, the layers' changes this frame, one a line (see
+# flush_todo): $4 at row $1, column $2, $3 columns wide, in attributes $5
+# (the parameters of an ESC[...m, such as 32 for green; none if empty or
+# left out).
+todo_add() {
+  add_item 0 "$@"
+}
+
+# As todo_add, for the formation's invaders and for cells to blank. They're
+# sent after the rest, as invaders go over the shields. (A blank is never
+# where anything else is drawn, so it can go with either.)
+top_add() {
+  add_item 1 "$@"
+}
+
+# Adds an item (row $2, column $3, ...: see todo_add) to $todo, keeping it
+# in order: group $1 (0 or 1: see top_add), then row, then column, so the
+# cursor mostly runs on from one to the next. Items mostly come in order,
+# so it's checked first whether this one goes at the end ($todo_last is
+# the last one's key). On a whole formation redrawn, they're just added at
+# the end: it's sent row by row anyway.
+add_item() {
+  key=$(($1 * 1000000 + $2 * 1000 + $3))
+  item="$key;$2;$3;$4;${6-} $5$NL"
+  if [ $key -ge $todo_last ] || [ $inv_touched -eq 1 ]; then
+    todo=$todo$item todo_last=$key
+    return
+  fi
+  before="" rest=$todo
+  while [ -n "$rest" ]; do
+    q=${rest%%"$NL"*}
+    [ ${q%%";"*} -gt $key ] && break
+    before="$before$q$NL" rest=${rest#*"$NL"}
+  done
+  todo=$before$item$rest
+}
+
+# As todo_add ($1 "top" for top_add), for a layer drawn on cells a thing
+# that moves may be on: the cells are marked ($lay_cov), so such a thing is
+# drawn again over it (see changed_pieces).
+lay() {
+  if [ "$1" = top ]; then
+    shift
+    top_add "$@"
+  else
+    todo_add "$@"
+  fi
+  pc=0
+  while [ $pc -lt $3 ]; do
+    lay_cov="$lay_cov $1;$(($2 + pc)) "
+    pc=$((pc + 1))
+  done
+}
+
+# Adds the items in $todo to $out (see todo_add).
+flush_todo() {
+  IFS=$NL
+  for p in $todo; do
+    unset IFS
+    k=${p%% *}; k=${k#*";"}          # (the key is only for keeping order)
+    fr=${k%%";"*}; t=${k#*";"}; fc=${t%%";"*}; t=${t#*";"}
+    emit $fr $fc ${t%%";"*} "${p#* }" "${t#*";"}"
+  done
+  unset IFS
+  todo="" todo_last=0
 }
 
 # Sends $head and then $out, unless there's nothing to send: no changes, no
 # bell and no clear. With a line speed set, its cost in bytes comes off
 # $credit (see draw).
 send_frame() {
+  if [ -n "$cur_a" ]; then
+    out="$out${ESC}[m" cur_a=""
+  fi
   if [ -n "$out" ] || [ "$head" != "$sync_on" ]; then
     out="$head$out$sync_off"
     printf '%s' "$out"
@@ -1580,16 +1704,17 @@ draw() {
   else
     head=$sync_on
   fi
-  out="" pieces="" items="" cov="" lay_cov=""
+  out="" todo="" todo_last=0 grows="" pieces="" items="" cov="" lay_cov=""
   [ $bell -eq 1 ] && { head="$head$BEL"; bell=0; }
 
   # Score values under their headings, zero-padded like the arcade's
+  # (The scores, and the timing below, are items: see todo_add)
   pad4 $score
-  hud="${ESC}[$((hud_row + 1));${sc_x}H$p4"
+  hud="$((hud_row + 1));$sc_x;4; $p4$NL"
   pad4 $hi
-  hud="$hud${ESC}[$((hud_row + 1));$((hi_x + 2))H$p4"
+  hud="$hud$((hud_row + 1));$((hi_x + 2));4; $p4$NL"
   # Right-justified under WAVE, mirroring the score under SCORE
-  hud="$hud${ESC}[$((hud_row + 1));$((wv_x + 4 - ${#wave}))H$wave"
+  hud="$hud$((hud_row + 1));$((wv_x + 4 - ${#wave}));${#wave}; $wave$NL"
   # With F, timing in the window's top-left corner (6 columns are free
   # there at any width). On the first row, how it's pacing (see pace): "f"
   # (fine) and the sleep in ms, or "c", "t" or "b" (cal, tick or busy) and
@@ -1614,12 +1739,23 @@ draw() {
     fi
     while [ ${#t} -lt 6 ]; do t="$t "; done
     if [ -n "$dbg_fps" ]; then d="$dbg_fps$g_pm$dbg_sd"; else d="--    "; fi
-    hud="$hud${ESC}[1;1H$t${ESC}[2;1H$d"
+    hud="${hud}1;1;6; $t${NL}2;1;6; $d$NL"
   else
-    hud="$hud${ESC}[1;1H      ${ESC}[2;1H      "
+    hud="${hud}1;1;6;       ${NL}2;1;6;       $NL"
   fi
+  # Only the fields that have changed are sent
   if [ "$hud" != "$sent_hud" ]; then
-    emit_raw "$hud"
+    IFS=$NL
+    for p in $hud; do
+      unset IFS
+      case "$NL$sent_hud" in
+        *"$NL$p$NL"*) ;;
+        *)
+          fr=${p%%";"*}; t=${p#*";"}; fc=${t%%";"*}; t=${t#*";"}
+          todo_add $fr $fc ${t%%";"*} "${p#* }" ;;
+      esac
+    done
+    unset IFS
     sent_hud=$hud
   fi
 
@@ -1639,32 +1775,26 @@ draw() {
     put $((ground_row + 1)) $((left + 1)) $w "$n_txt$spares"
   fi
 
-  # The ground line, worn by invader shots blowing up on it: each column
-  # shows its 4 pixels as best it can (whole on the title screen).
-  # Re-rendered only when it changes.
+  # The ground line, worn by invader shots blowing up on it (whole on the
+  # title screen). In play, only the columns that have changed since they
+  # were last sent ($sent_gnd_I) are sent.
   if [ $mode = title ]; then
-    ground_frame=$ground_full
-  elif [ $ground_dirty -eq 1 ]; then
-    ground_frame="${ESC}[32m${ESC}[$ground_row;${left}H"
+    if [ "$sent_ground" != title ]; then
+      todo_add $ground_row $left $field_w "$ground_line" 32
+      sent_ground=title
+    fi
+  elif [ $ground_dirty -eq 1 ] || [ "$sent_ground" != play ]; then
     i=0
     while [ $i -lt $field_w ]; do
-      eval "g=\$gnd_$i"
-      case $g in
-        15) g=$g_gnd ;;
-        0) g=' ' ;;
-        1|2|3) g=$g_gnd_l ;;   # left half only
-        4|8|12) g=$g_gnd_r ;;  # right half only
-        *) g=$g_gnd_gaps ;;    # gaps across the column
-      esac
-      ground_frame="${ground_frame}${g}"
+      eval "m=\$gnd_$i n=\${sent_gnd_$i-}"
+      if [ "$sent_ground" != play ] || [ "$m" != "$n" ]; then
+        ground_glyph $i
+        todo_add $ground_row $((left + i)) 1 "$g" 32
+        eval "sent_gnd_$i=\$m"
+      fi
       i=$((i + 1))
     done
-    ground_frame="${ground_frame}${ESC}[0m"
-    ground_dirty=0
-  fi
-  if [ "$ground_frame" != "$sent_ground" ]; then
-    emit_raw "$ground_frame"
-    sent_ground=$ground_frame
+    ground_dirty=0 sent_ground=play
   fi
   # A part of the scenery still to send after a full redraw (nothing else
   # is drawn where it goes)
@@ -1677,6 +1807,7 @@ draw() {
   # what has typed out since the last frame is sent
   if [ $mode = title ]; then
     draw_title
+    flush_todo
     changed_pieces
     send_frame
     return
@@ -1699,14 +1830,11 @@ draw() {
   # Shields (green, like the arcade's screen overlay) change only when hit,
   # so they are re-rendered only then (and sent as below)
   if [ $shields_dirty -eq 1 ]; then
-    shield_frame="${ESC}[32m" shield_cov=""
+    shield_cov=""
     for s in $shield_cells; do
       qr=${s%%:*}; t=${s#*:}; qc=${t%%:*}
-      shield_piece $qr $qc
-      shield_frame="$shield_frame$piece"
       shield_cov="$shield_cov $qr;$qc "
     done
-    shield_frame="$shield_frame${ESC}[0m"
     shields_dirty=0
   fi
 
@@ -1779,8 +1907,7 @@ draw() {
         *)
           inv_frame="$inv_frame$piece"
           inv_cov="$inv_cov$cells"
-          inv_add="$inv_add $piece"
-          lay_cov="$lay_cov$cells" ;;
+          inv_add="$inv_add $piece" ;;
       esac
     done
   fi
@@ -1832,7 +1959,7 @@ draw() {
     fi
   done
 
-  [ -n "$sp" ] && put $go_row $gx ${#sp} "$sp"
+  [ -n "$sp" ] && put_grow $go_row $gx ${#sp} "$sp"
 
   # Blank what moved: cells covered last frame and not this one. Where a
   # moving thing was over an invader or a shield, that invader or shield
@@ -1851,7 +1978,7 @@ draw() {
             *)
               case $shield_cov in
                 *" $zr;$zc "*) shield_redo="$shield_redo $zr;$zc" ;;
-                *) emit $zr $zc 1 " " ;;
+                *) top_add $zr $zc 1 " " ;;
               esac ;;
           esac ;;
       esac
@@ -1870,7 +1997,7 @@ draw() {
         *)
           case $shield_cov in
             *" $z "*) shield_redo="$shield_redo $z" ;;
-            *) emit ${z%";"*} ${z#*";"} 1 " " ;;
+            *) top_add ${z%";"*} ${z#*";"} 1 " " ;;
           esac ;;
       esac
     done
@@ -1881,32 +2008,37 @@ draw() {
   # go under invaders (passing through them), so an invader on a redrawn
   # cell is redrawn too.
   if [ -z "$sent_shields" ] || [ $shields_whole -eq 1 ]; then
-    emit_raw "$shield_frame"
+    for s in $shield_cells; do
+      qr=${s%%:*}; t=${s#*:}; qc=${t%%:*}
+      shield_piece $qr $qc
+      todo_add $qr $qc 1 "$g" 32
+    done
     sent_shields=1 shields_whole=0
     inv_touched=1
   elif [ -n "$shield_changed$shield_redo" ]; then
-    out="$out${ESC}[32m"
     for z in $shield_changed $shield_redo; do
       shield_piece ${z%";"*} ${z#*";"}
-      emit ${z%";"*} ${z#*";"} 1 "$g"
-      lay_cov="$lay_cov $z "
+      lay ${z%";"*} ${z#*";"} 1 "$g" 32
       case $inv_cov in *" $z "*) inv_redo="$inv_redo $z" ;; esac
     done
-    out="$out${ESC}[0m"
   fi
   shield_changed=""
 
   # Invaders: all of them when need be; otherwise just those that moved
   # (and are still there), and any on cells redrawn or passed over
   if [ $inv_touched -eq 1 ]; then
-    emit_raw "$inv_frame"
+    for inv in $invaders; do
+      ir=${inv%%:*}; t=${inv#*:}; ic=${t%%:*}; t=${t#*:}
+      eval "g=\$g_inv_${t%%:*}"
+      top_add $ir $ic 2 "$g"
+    done
   else
     inv_sent=""
     for piece in $inv_add; do
       case $inv_frame in
         *"$piece"*)
           t=${piece#"${ESC}["}; zr=${t%%";"*}; t=${t#*";"}
-          emit $zr ${t%%H*} 2 "${t#*H}"
+          lay top $zr ${t%%H*} 2 "${t#*H}"
           inv_sent="$inv_sent $piece " ;;
       esac
     done
@@ -1922,14 +2054,14 @@ draw() {
             piece="${ESC}[$zr;${zc}H$g"
             case $inv_sent in
               *" $piece "*) ;;
-              *) emit $zr $zc 2 "$g"; inv_sent="$inv_sent $piece " ;;
-            esac
-            lay_cov="$lay_cov $zr;$zc  $zr;$((zc + 1)) " ;;
+              *) lay top $zr $zc 2 "$g"; inv_sent="$inv_sent $piece " ;;
+            esac ;;
         esac
       done
     done
   fi
 
+  flush_todo
   changed_pieces
   send_frame
 }
@@ -1962,8 +2094,10 @@ changed_pieces() {
     for z in $cells; do
       case $dirty in
         all|*" $z "*)
-          t=${k#*";"}
-          emit ${k%%";"*} ${t%";"*} ${t#*";"} "${p#* }"
+          fr=${k%%";"*}; t=${k#*";"}; fc=${t%";"*}; fw=${t#*";"}
+          text=${p#* }
+          [ "$dirty" = all ] || grown
+          emit $fr $fc $fw "$text"
           break ;;
       esac
     done
@@ -2057,7 +2191,7 @@ draw_title() {
       n=$((plain + (left_cols - plain + 1) / 2))
     fi
     arcade_text "$text" $n $plain
-    put $lr $lc ${#sp} "$sp"
+    put_grow $lr $lc ${#sp} "$sp"
     left_cols=$((left_cols - plain - 2 * (${#text} - plain)))
   done
 

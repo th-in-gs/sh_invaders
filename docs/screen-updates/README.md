@@ -21,9 +21,10 @@ and `[`:
 | `ESC[?2026l` | 8 | End the update: the terminal shows the changes all at once |
 | `ESC[row;colH` | 6–8 | Move the cursor to row, column (counting from 1) |
 | `ESC[nA`, `B`, `C`, `D` | 3–5 | Move the cursor up, down, right or left n places (n left out if 1) |
+| `ESC M` | 2 | Move the cursor up one place (reverse index) |
 | `BS` (`0x08`) | 1 | Move the cursor left one place |
 | `ESC[32m`, `ESC[31;4m`, `ESC[2m` … | 4–7 | Set colors and attributes: green, red, underline, dim, reverse video |
-| `ESC[0m` | 4 | Reset the colors and attributes |
+| `ESC[m`, `ESC[0m` | 3, 4 | Reset the colors and attributes |
 | `ESC[H`, `ESC[2J` | 3, 4 | Move the cursor to the top left, and clear the screen (only for a full redraw, or the "too small" message) |
 | `BEL` (`0x07`) | 1 | Ring the bell |
 
@@ -36,13 +37,13 @@ synchronized updates):
 ```
 ESC[14;31H      cursor to row 14, column 31    8 bytes
 ␠               a space: blank the old shot    1 byte
-ESC[A BS        cursor up one, and back one    4 bytes
+ESC M BS        cursor up one, and back one    3 bytes
 ¡               the shot (2 bytes in UTF-8)    2 bytes
                                               ─────────
-                                              15 bytes
+                                              14 bytes
 ```
 
-Only 3 of those 15 bytes are the characters themselves (the space, and
+Only 3 of those 14 bytes are the characters themselves (the space, and
 the shot's 2). The rest are cursor moves: most of a frame is the overhead
 around a few characters. Where the terminal does synchronized updates,
 the markers add 16 bytes to every frame sent.
@@ -53,12 +54,21 @@ The game keeps track of where the cursor is, from where the last text it
 wrote ended, and moves it to the next change the shortest way: not at all
 if it's already there, up, down, left or right if that's shorter, and to
 the row and column otherwise. It uses only moves the VT100 had, so it
-works on old terminals too.
+works on old terminals too. (Reverse index would scroll the screen if the
+cursor were on the top row, but nothing moves up from there.)
 
-Where the cursor is isn't known after a whole layer is sent (the moves are
-in the layer's text), after a full redraw, or after text that reaches the
-terminal's last column (where terminals differ over what the cursor does
-next). The next move is then always to the row and column.
+Changes are sent in order of row and column, so the cursor mostly runs on
+from one to the next: when an invader moves left, say, it's drawn and
+then the cell it left is blanked, with no move between. (Invaders go
+after shields, as they can be over them; see below.)
+
+It keeps track of the colors and attributes in the same way, and changes
+them only when the next change needs different ones.
+
+Where the cursor is isn't known after a part of the scenery is sent (the
+moves are in its text), after a full redraw, or after text that reaches
+the terminal's last column (where terminals differ over what the cursor
+does next). The next move is then always to the row and column.
 
 ### Synchronized updates
 
@@ -72,30 +82,36 @@ only to a terminal that says it does them.
 
 **Layers** are the parts of the screen that change only now and then: the
 scores and wave, the ground line, the shields and the invader formation.
-The game remembers what it last sent of each, and sends a layer again
-only when it has changed.
-
-The shields and the formation change a little at a time, so they're
-updated cell by cell: a shield cell that's hit is redrawn on its own, and
-an invader that moves is blanked where it was and drawn where it is.
+Each knows cheaply what has changed in it, and sends just that: a score
+that has changed, a column of ground a shot has worn away, a shield cell
+that's hit, an invader that has moved (blanked where it was and drawn
+where it is). All of them are sent the same way, as items (a place, a
+width, colors, and the text), sorted and then sent as above.
 
 **Pieces** are the things that move: the cannon, the row of spare
 cannons, shots, explosions, the saucer, "GAME OVER", and the title
 screen's text. Each frame, the game lists every piece afresh (its place,
 its width and how to draw it), whether it moved or not, and compares the
-list with the last frame's.
+list with the last frame's. Text that only grows as it types out (the
+title's, and "GAME OVER") sends just the letters that are new, from where
+the cursor already is.
 
 ## How it's stored
 
 POSIX sh has no arrays, sets or maps: only strings, and numbers held as
 strings. So everything above is kept in strings, in a few shapes:
 
-- **Ready-to-send strings.** Each layer is kept as the exact text that
-  draws it, cursor moves and all. For the scores and the ground, a copy of
-  what was last sent is kept too, and "has it changed?" is a string
-  comparison. The formation's string is edited in place instead: an
-  invader that moves is cut out of it by pattern, and added again at the
-  end.
+- **Lists of items.** The changes to send this frame, one a line, as
+  `key;row;col;width;colors text`. The scores are a list like it too, and
+  the copy of what was last sent is compared line by line. The key keeps
+  the list in order: the group (shields and the like first, then invaders
+  and blanks), then the row, then the column, as one number. Changes
+  mostly come in that order anyway, so each is checked first against the
+  last one's key, and just added at the end if it goes there. Otherwise
+  the list is walked to its place.
+- **Ready-to-send strings.** The formation is also kept as the text that
+  draws it, cursor moves and all, edited in place: an invader that moves
+  is cut out of it by pattern, and added again at the end.
 - **Sets of cells.** A set of screen cells (those the pieces cover, those
   the formation covers, those drawn this frame) is a string of
   `␠row;col␠` entries. The spaces each side make a lookup exact: a cell is
@@ -108,7 +124,7 @@ strings. So everything above is kept in strings, in a few shapes:
 - **"Arrays" of numbers.** Where every cell needs its own number, each has
   its own variable, named after its place and read and written with
   `eval`: a shield cell's remaining strength, or which of a ground
-  column's 4 pixels are left.
+  column's 4 pixels are left (and were, when it was last sent).
 
 Pattern matching (`case`) and cutting by pattern (`${var%...}`,
 `${var#...}`) are built into the shell, so none of this starts another
@@ -119,7 +135,9 @@ program.
 1. **Blanks.** A cell a piece covered last frame, and none covers now, is
    cleared. If an invader or a shield is there, that's redrawn instead of
    a space.
-2. **Layers.** Each layer that changed is added, whole or cell by cell.
+2. **Layers.** What has changed in each layer is added, as items. Then
+   all of them are sent, sorted: the scores, the ground and the shields in
+   order of row and column, then the invaders and the blanks.
 3. **Pieces.** A cell is *dirty* if a layer was drawn on it this frame, or
    if it belongs to a piece that's new, changed or gone since the last
    frame. (Only the shields and the formation can be under a piece: no
@@ -130,11 +148,13 @@ program.
    another still covers it. If the whole formation or all the shields are
    redrawn, every piece is sent.
 4. **Sending.** The frame is sent with the bell if it's due, and wrapped
-   in the synchronized-update markers if the terminal does them. If
-   there's nothing in it and no bell, nothing at all is sent.
+   in the synchronized-update markers if the terminal does them, with the
+   colors put back at the end. If there's nothing in it and no bell,
+   nothing at all is sent.
 
-Blanks are never where a layer is drawn, so the two can go in either
-order. Pieces go last, so the things that move always end up on top.
+Blanks are never where anything else is drawn, so they can go in any
+order. Invaders can be over shields, so they go after them. Pieces go
+last, so the things that move always end up on top.
 
 ## Keeping to a line speed
 
@@ -188,14 +208,14 @@ frames: see above).
 | | Without synchronized updates | With them |
 |---|---|---|
 | A frame with nothing changed | 0 | 0 |
-| The player's shot climbing a row | about 15 bytes | about 31 bytes |
-| The median frame sent in play | about 14–17 bytes | about 32 bytes |
-| On average in play | about 0.7–1 KB a second | about 1.5 KB a second |
-| A full redraw (in ASCII) | about 0.8 KB for the title, 1.6 KB for a new game | the same, plus 16 bytes |
+| The player's shot climbing a row | about 14 bytes | about 30 bytes |
+| The median frame sent in play | about 14 bytes | about 30 bytes |
+| On average in play | about 0.7 KB a second | about 1.2 KB a second |
+| A frame as the title types out | about 2 bytes | about 18 bytes |
+| A full redraw (in ASCII) | about 0.8 KB for the title, 1.2 KB for a new game | the same, plus 16 bytes |
 
-With `-b 9600`, play averaged about 600–700 bytes a second, with about
-2 frames in 5 sent: the screen updated every frame or two
-usually, and within 5 frames 9 times in 10.
+With `-b 9600`, play averaged about 620 bytes a second, with about half
+the frames sent.
 
 These were measured with `check.py` (below), in about a minute of play.
 
@@ -220,7 +240,16 @@ docs/screen-updates/check.py --shell 'zsh --emulate sh' --sync
 
 Arguments after `--` go to the game. `--sync` has the pretend terminal say
 it does synchronized updates, and `--first-keys t` switches characters
-just after starting (so with `-b`, to emoji). The exit status is 1 if any
+just after starting (so with `-b`, to emoji).
+
+`--frames N` scripts the keys by frame number instead of typing them in
+real time, and runs the game flat out with no pacing, for N frames of
+play. Every run then plays exactly the same game, so two versions of the
+script can be compared byte for byte (`--game` says which to run).
+`--bench` as well skips the logging and the check, and reports the CPU
+time the game took: the game is the same, so differences are the
+drawing's. Run each version a few times, alternately, as other work on
+the machine shows up in the times. The exit status is 1 if any
 screen didn't match. With every change to drawing so far, the screens have
 matched every time, under dash, bash, ksh and zsh, in ASCII and emoji,
 with and without synchronized updates and a line speed. (Breaking the

@@ -97,7 +97,7 @@ sent, with the cursor moved the shortest way, so the game’s
 [baud rate](https://en.wikipedia.org/wiki/Baud) is low. A typical frame is
 under 20 bytes (16 more where the terminal does synchronized output), and
 a frame where nothing has changed isn’t sent at all. In play it averages
-about 1 KB a second (1.5 KB with synchronized output). With `-b 9600` it
+about 0.7 KB a second (1.2 KB with synchronized output). With `-b 9600` it
 plays on a 9,600-baud line, the speed old terminals like the VT100 were
 often used at.
 
