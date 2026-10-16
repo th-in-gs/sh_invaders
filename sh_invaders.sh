@@ -1515,8 +1515,9 @@ draw() {
   # carries them: $credit grows each frame by what the line carries in a
   # frame's time (as last measured: see pace), and each byte sent costs 60.
   # (In those units a 60th of a second's worth is the line's bytes a
-  # second.) While it's below 0, frames aren't sent. Changes since what was last sent all go with the
-  # next frame that is, as everything is compared with what was last sent.
+  # second.) While it's below 0, frames aren't sent: their changes all go
+  # with the next frame that's sent, as everything is compared with what
+  # was last sent.
   # Up to a tenth of a second's credit can be saved up, for bursts.
   if [ $baud -gt 0 ]; then
     credit=$((credit + baud * 6 * frame_us / 1000000))
