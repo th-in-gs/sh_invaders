@@ -31,6 +31,7 @@ ESC=$(printf '\033')
 BEL=$(printf '\007')
 NL='
 '
+BS=$(printf '\010')
 
 old_stty=""     # the terminal's settings, to restore (see init)
 alt_screen=0    # 1 once on the alternate screen
@@ -82,9 +83,10 @@ cleanup() {
 # must be unbuffered and unechoed (see init); anything else read meanwhile
 # is dropped. Any terminal that can draw the game can answer. The game waits
 # up to 2 seconds for the reply, in case of a slow connection, and returns
-# 1 if none comes.
+# 1 if none comes. $1, if given, is another question to ask first; all that
+# was read is left in $term_reply.
 term_size() {
-  printf '%s' "${ESC}7${ESC}[999;999H${ESC}[6n${ESC}8"
+  printf '%s' "${1-}${ESC}7${ESC}[999;999H${ESC}[6n${ESC}8"
   reply=""
   tries=0
   while [ $tries -lt 100 ]; do
@@ -94,6 +96,7 @@ term_size() {
     sleep 0.02
     tries=$((tries + 1))
   done
+  term_reply=$reply
   # The reply is the ESC[...R with two numbers (others may be keys pressed)
   # ($csi, not a nested "${ESC}[" in ${reply#...}, which some editors'
   # syntax highlighting can't follow)
@@ -191,10 +194,20 @@ init() {
   old_stty=$(stty -g)
   stty -icanon -echo min 0 time 0
 
-  if ! term_size; then
+  # Also ask whether the terminal does synchronized output (ESC[?2026$p),
+  # which frames are wrapped in where it does (see draw). It answers
+  # ESC[?2026;<n>$y, with n 1, 2 or 3 if it does. A terminal that doesn't
+  # know the question ignores it, and as terminals answer in turn, any
+  # answer comes before the size: so there's no waiting for one that
+  # doesn't come.
+  if ! term_size "${ESC}[?2026\$p"; then
     exit_msg="The terminal didn't say what size it is (it didn't answer ESC[6n)."
     exit 1
   fi
+  case $term_reply in
+    *"${ESC}[?2026;"[123]"\$y"*) sync_on="${ESC}[?2026h" sync_off="${ESC}[?2026l" ;;
+    *) sync_on="" sync_off="" ;;
+  esac
   if [ $cols -lt $((field_w + 2)) ] || [ $rows -lt 24 ]; then
     exit_msg="Terminal is ${cols}x${rows}; at least $((field_w + 2))x24 is needed."
     exit 1
@@ -204,6 +217,8 @@ init() {
   resized=0
   too_small=0
   sent_small=""   # the "too small" message last sent (see draw)
+  cur_r=0         # where the cursor is isn't known yet (see emit)
+  scenery_todo="" # scenery parts still to send (see draw)
   trap 'resized=1' WINCH 2>/dev/null || true
 
   printf '%s' "${ESC}[?1049h${ESC}[?25l"   # alternate screen; hide the cursor
@@ -297,12 +312,19 @@ layout() {
 # in use: side borders, the whole ground line, score headings, controls.
 # Then the screen is cleared and drawn afresh.
 build_scenery() {
-  scenery="${ESC}[2m"
+  # The playfield's sides. They're also cut into parts of 4 rows, for
+  # sending a part at a time on a slow line (see draw).
+  scenery="${ESC}[2m" scenery_parts="" part=""
   r=$top_row
   while [ $r -lt $ground_row ]; do
-    scenery="$scenery${ESC}[$r;${x0}H$g_side${ESC}[$r;$((right + 1))H$g_side"
+    t="${ESC}[$r;${x0}H$g_side${ESC}[$r;$((right + 1))H$g_side"
+    scenery="$scenery$t" part="$part$t"
+    if [ $(( (r - top_row) % 4)) -eq 3 ]; then
+      scenery_parts="$scenery_parts${ESC}[2m$part${ESC}[0m$NL" part=""
+    fi
     r=$((r + 1))
   done
+  [ -n "$part" ] && scenery_parts="$scenery_parts${ESC}[2m$part${ESC}[0m$NL"
   scenery="$scenery${ESC}[0m"
   # The ground line whole, for the title screen; in play it erodes (see
   # erode_ground)
@@ -312,12 +334,14 @@ build_scenery() {
   ground_full="${ESC}[32m${ESC}[$ground_row;${left}H$line${ESC}[0m"
   ground_dirty=1
   redraw_all=1
-  scenery="$scenery${ESC}[$hud_row;${sc_x}HSCORE${ESC}[$hud_row;${hi_x}HHI-SCORE"
-  scenery="$scenery${ESC}[$hud_row;${wv_x}HWAVE"
+  t="${ESC}[$hud_row;${sc_x}HSCORE${ESC}[$hud_row;${hi_x}HHI-SCORE"
+  t="$t${ESC}[$hud_row;${wv_x}HWAVE"
+  scenery="$scenery$t" scenery_parts="$t$NL$scenery_parts"
   # The row below the ground shows the cannons left (see draw); the
   # controls go below that
   help="MOVE: H/L OR ARROWS   FIRE: SPACE   QUIT: Q"
-  scenery="$scenery${ESC}[$((ground_row + 2));$((left + (field_w - ${#help}) / 2))H$help"
+  t="${ESC}[$((ground_row + 2));$((left + (field_w - ${#help}) / 2))H$help"
+  scenery="$scenery$t" scenery_parts="${scenery_parts%%"$NL"*}$NL$t$NL${scenery_parts#*"$NL"}"
 }
 
 init_game() {
@@ -335,6 +359,7 @@ init_game() {
 
   # Frame pacing (see pace)
   target_us=16667   # 60 fps, the arcade's rate
+  frame_us=$target_us   # the last measured frame time (see pace_measure)
   delay_us=9000     # initial sleep per frame, adjusted as the game runs
   pace_frames=0
   pace_check=0
@@ -1387,7 +1412,7 @@ bomb_glyph() {
 # them as "row;col;width text", one a line), and records the cells it
 # covers ($items lists "row;col;width", $cov " row;col " per cell).
 put() {
-  pieces="$pieces$1;$2;$3 ${ESC}[$1;$2H$4$NL"
+  pieces="$pieces$1;$2;$3 $4$NL"
   items="$items $1;$2;$3"
   pc=0
   while [ $pc -lt $3 ]; do
@@ -1420,36 +1445,110 @@ dirty_unless_in() {
   unset IFS
 }
 
-# Sends $head and then $1, unless there's nothing to send: no changes, no
-# bell and no clear.
+# Adds $4 to $out at row $1, column $2, $3 columns wide, moving the cursor
+# there the shortest way from where the last text left it ($cur_r,
+# $cur_c; $cur_r is 0 if that isn't known). The moves are all ones the
+# VT100 had: to a row and column (ESC[r;cH), up, down, right or left
+# (ESC[nA, B, C, D; n can be left out if 1), and backspace.
+emit() {
+  mv="${ESC}[$1;$2H"
+  if [ $cur_r -gt 0 ]; then
+    dr=$(($1 - cur_r)) dc=$(($2 - cur_c))
+    case $dr in
+      0) v="" ;;
+      -1) v="${ESC}[A" ;;
+      1) v="${ESC}[B" ;;
+      -*) v="${ESC}[${dr#-}A" ;;
+      *) v="${ESC}[${dr}B" ;;
+    esac
+    case $dc in
+      0) h="" ;;
+      -1) h="$BS" ;;
+      1) h="${ESC}[C" ;;
+      -*) h="${ESC}[${dc#-}D" ;;
+      *) h="${ESC}[${dc}C" ;;
+    esac
+    [ ${#v} -lt $((${#mv} - ${#h})) ] && mv=$v$h
+  fi
+  out="$out$mv$4"
+  cur_r=$1 cur_c=$(($2 + $3))
+  # Text that reaches the last column leaves the cursor waiting to wrap,
+  # where moves from it differ between terminals
+  [ $cur_c -gt $cols ] && cur_r=0
+  return 0
+}
+
+# Adds $1 to $out, after which where the cursor is isn't known.
+emit_raw() {
+  out="$out$1"
+  cur_r=0
+}
+
+# Sends $head and then $out, unless there's nothing to send: no changes, no
+# bell and no clear. With a line speed set, its cost in bytes comes off
+# $credit (see draw).
 send_frame() {
-  if [ -n "$1" ] || [ "$head" != "${ESC}[?2026h" ]; then
-    printf '%s' "$head$1${ESC}[?2026l"
+  if [ -n "$out" ] || [ "$head" != "$sync_on" ]; then
+    out="$head$out$sync_off"
+    printf '%s' "$out"
+    if [ $baud -gt 0 ]; then
+      if [ $ascii -eq 1 ]; then
+        n=${#out}
+      else
+        # Some shells' ${#} counts characters, but in the C locale they're
+        # bytes. (The player's own locale setting is put back.)
+        lc=${LC_ALL-} lc_set=${LC_ALL+1}
+        LC_ALL=C
+        n=${#out}
+        if [ -n "$lc_set" ]; then LC_ALL=$lc; else unset LC_ALL; fi
+      fi
+      credit=$((credit - 60 * n))
+    fi
   fi
 }
 
 draw() {
+  # With a line speed set (-b), frames are sent only as fast as the line
+  # carries them: $credit grows each frame by what the line carries in a
+  # frame's time (as last measured: see pace), and each byte sent costs 60.
+  # (In those units a 60th of a second's worth is the line's bytes a
+  # second.) While it's below 0, frames aren't sent. Changes since what was last sent all go with the
+  # next frame that is, as everything is compared with what was last sent.
+  # Up to a tenth of a second's credit can be saved up, for bursts.
+  if [ $baud -gt 0 ]; then
+    credit=$((credit + baud * 6 * frame_us / 1000000))
+    [ $credit -gt $((baud * 6 / 10)) ] && credit=$((baud * 6 / 10))
+    if [ $credit -lt 0 ] && [ $redraw_all -eq 0 ]; then
+      return
+    fi
+  fi
   if [ $too_small -eq 1 ]; then
     t="Window too small: ${cols}x${rows}, need at least $((field_w + 2))x24. Paused (q quits)."
     if [ "$t" != "$sent_small" ]; then
-      printf '%s' "${ESC}[?2026h${ESC}[H${ESC}[2J$t${ESC}[?2026l"
-      sent_small=$t
+      printf '%s' "$sync_on${ESC}[H${ESC}[2J$t$sync_off"
+      sent_small=$t cur_r=0
     fi
     return
   fi
   inv_touched=0 cleared=0
   if [ $redraw_all -eq 1 ]; then
-    head="${ESC}[?2026h${ESC}[H${ESC}[2J$scenery"
-    cleared=1
+    # With a line speed set, the scenery is left to send a part a frame
+    # (below), so the game itself appears sooner
+    if [ $baud -gt 0 ]; then
+      head="$sync_on${ESC}[H${ESC}[2J" scenery_todo=$scenery_parts
+    else
+      head="$sync_on${ESC}[H${ESC}[2J$scenery" scenery_todo=""
+    fi
+    cleared=1 cur_r=0
     prev_items="" prev_pieces=""
     # Nothing has been sent onto the cleared screen yet
     sent_hud="" sent_ground="" sent_shields=""
     inv_touched=1
     redraw_all=0
   else
-    head="${ESC}[?2026h"
+    head=$sync_on
   fi
-  f="" pieces="" items="" cov="" layers="" blanks="" lay_cov=""
+  out="" pieces="" items="" cov="" lay_cov=""
   [ $bell -eq 1 ] && { head="$head$BEL"; bell=0; }
 
   # Score values under their headings, zero-padded like the arcade's
@@ -1462,9 +1561,10 @@ draw() {
   # With F, timing in the window's top-left corner (6 columns are free
   # there at any width). On the first row, how it's pacing (see pace): "f"
   # (fine) and the sleep in ms, or "c", "t" or "b" (cal, tick or busy) and
-  # the busy-wait's count. On the second, the last measured frame rate and
-  # how much the last 8 vary (see fps_stats). Turned off, the same cells
-  # are sent as blanks.
+  # the busy-wait's count; the letter is in upper case if frames are
+  # wrapped in synchronized output. On the second, the last measured frame
+  # rate and how much the last 8 vary (see fps_stats). Turned off, the same
+  # cells are sent as blanks.
   if [ $dbg -eq 1 ]; then
     case $pace_mode in
       fine) t="f $((delay_us / 1000))ms" ;;
@@ -1472,6 +1572,14 @@ draw() {
       tick) t="t$spin" ;;
       busy) t="b$spin" ;;
     esac
+    if [ -n "$sync_on" ]; then
+      case $t in
+        f*) t="F${t#?}" ;;
+        c*) t="C${t#?}" ;;
+        t*) t="T${t#?}" ;;
+        *) t="B${t#?}" ;;
+      esac
+    fi
     while [ ${#t} -lt 6 ]; do t="$t "; done
     if [ -n "$dbg_fps" ]; then d="$dbg_fps$g_pm$dbg_sd"; else d="--    "; fi
     hud="$hud${ESC}[1;1H$t${ESC}[2;1H$d"
@@ -1479,7 +1587,7 @@ draw() {
     hud="$hud${ESC}[1;1H      ${ESC}[2;1H      "
   fi
   if [ "$hud" != "$sent_hud" ]; then
-    layers="$layers$hud"
+    emit_raw "$hud"
     sent_hud=$hud
   fi
 
@@ -1523,8 +1631,14 @@ draw() {
     ground_dirty=0
   fi
   if [ "$ground_frame" != "$sent_ground" ]; then
-    layers="$layers$ground_frame"
+    emit_raw "$ground_frame"
     sent_ground=$ground_frame
+  fi
+  # A part of the scenery still to send after a full redraw (nothing else
+  # is drawn where it goes)
+  if [ -n "$scenery_todo" ]; then
+    emit_raw "${scenery_todo%%"$NL"*}"
+    scenery_todo=${scenery_todo#*"$NL"}
   fi
 
   # The title screen's text is drawn like the things that move, so only
@@ -1532,7 +1646,7 @@ draw() {
   if [ $mode = title ]; then
     draw_title
     changed_pieces
-    send_frame "$layers$f"
+    send_frame
     return
   fi
 
@@ -1707,7 +1821,8 @@ draw() {
 
   # Blank what moved: cells covered last frame and not this one. Where a
   # moving thing was over an invader or a shield, that invader or shield
-  # cell is redrawn instead.
+  # cell is redrawn instead. (Blanks are never where a layer is drawn, so
+  # they can go before or after the layers.)
   inv_redo="" shield_redo=""
   for k in $prev_items; do
     case "$items " in *" $k "*) continue ;; esac
@@ -1721,7 +1836,7 @@ draw() {
             *)
               case $shield_cov in
                 *" $zr;$zc "*) shield_redo="$shield_redo $zr;$zc" ;;
-                *) blanks="$blanks${ESC}[$zr;${zc}H " ;;
+                *) emit $zr $zc 1 " " ;;
               esac ;;
           esac ;;
       esac
@@ -1731,50 +1846,54 @@ draw() {
   prev_items=$items
 
   # Invaders that moved or went: blank the cells they left that nothing
-  # covers now
-  for z in $gone_cov; do
-    case $inv_cov$cov in
-      *" $z "*) ;;
-      *)
-        case $shield_cov in
-          *" $z "*) shield_redo="$shield_redo $z" ;;
-          *)
-            zr=${z%";"*} zc=${z#*";"}
-            blanks="$blanks${ESC}[$zr;${zc}H " ;;
-        esac ;;
-    esac
-  done
-  # A cleared screen has nothing to blank (and after a resize, the cells
-  # left are in the old layout)
-  [ $cleared -eq 1 ] && blanks=""
+  # covers now. (A cleared screen has nothing to blank, and after a resize,
+  # the cells left are in the old layout.)
+  if [ $cleared -eq 0 ]; then
+    for z in $gone_cov; do
+      case $inv_cov$cov in
+        *" $z "*) ;;
+        *)
+          case $shield_cov in
+            *" $z "*) shield_redo="$shield_redo $z" ;;
+            *) emit ${z%";"*} ${z#*";"} 1 " " ;;
+          esac ;;
+      esac
+    done
+  fi
 
   # Shields: all of them on a cleared screen or for a new wave; otherwise
   # just the cells that were hit, or that something has passed over. Shields
   # go under invaders (passing through them), so an invader on a redrawn
   # cell is redrawn too.
   if [ -z "$sent_shields" ] || [ $shields_whole -eq 1 ]; then
-    layers="$layers$shield_frame"
+    emit_raw "$shield_frame"
     sent_shields=1 shields_whole=0
     inv_touched=1
   elif [ -n "$shield_changed$shield_redo" ]; then
-    layers="$layers${ESC}[32m"
+    out="$out${ESC}[32m"
     for z in $shield_changed $shield_redo; do
       shield_piece ${z%";"*} ${z#*";"}
-      layers="$layers$piece"
+      emit ${z%";"*} ${z#*";"} 1 "$g"
       lay_cov="$lay_cov $z "
       case $inv_cov in *" $z "*) inv_redo="$inv_redo $z" ;; esac
     done
-    layers="$layers${ESC}[0m"
+    out="$out${ESC}[0m"
   fi
   shield_changed=""
 
   # Invaders: all of them when need be; otherwise just those that moved
   # (and are still there), and any on cells redrawn or passed over
   if [ $inv_touched -eq 1 ]; then
-    layers="$layers$inv_frame"
+    emit_raw "$inv_frame"
   else
+    inv_sent=""
     for piece in $inv_add; do
-      case $inv_frame in *"$piece"*) layers="$layers$piece" ;; esac
+      case $inv_frame in
+        *"$piece"*)
+          t=${piece#"${ESC}["}; zr=${t%%";"*}; t=${t#*";"}
+          emit $zr ${t%%H*} 2 "${t#*H}"
+          inv_sent="$inv_sent $piece " ;;
+      esac
     done
     for z in $inv_redo; do
       zr=${z%";"*} zc=${z#*";"}
@@ -1786,7 +1905,10 @@ draw() {
             t=${invaders#"$pre $zr:$zc:"}
             eval "g=\$g_inv_${t%%:*}"
             piece="${ESC}[$zr;${zc}H$g"
-            case $layers in *"$piece"*) ;; *) layers="$layers$piece" ;; esac
+            case $inv_sent in
+              *" $piece "*) ;;
+              *) emit $zr $zc 2 "$g"; inv_sent="$inv_sent $piece " ;;
+            esac
             lay_cov="$lay_cov $zr;$zc  $zr;$((zc + 1)) " ;;
         esac
       done
@@ -1794,10 +1916,10 @@ draw() {
   fi
 
   changed_pieces
-  send_frame "$blanks$layers$f"
+  send_frame
 }
 
-# Sets $f to draw the things that move ($pieces, see put): just those that
+# Adds to $out the things that move ($pieces, see put): just those that
 # are new or changed, and any under something else drawn this frame (or
 # last: a thing that's gone may have been drawn over them). As layers are
 # drawn first, a whole formation or shields drawn afresh could be over any
@@ -1815,10 +1937,14 @@ changed_pieces() {
   IFS=$NL
   for p in $pieces; do
     unset IFS
-    piece_cells "${p%% *}"
+    k=${p%% *}
+    piece_cells "$k"
     for z in $cells; do
       case $dirty in
-        all|*" $z "*) f="$f${p#* }"; break ;;
+        all|*" $z "*)
+          t=${k#*";"}
+          emit ${k%%";"*} ${t%";"*} ${t#*";"} "${p#* }"
+          break ;;
       esac
     done
   done
@@ -2240,15 +2366,34 @@ pace_busy() {
   [ $spin -lt 0 ] && spin=0
 }
 
+usage() {
+  echo "Usage: $0 [-a] [-b baud]" >&2
+  echo "  -a       plain ASCII, without emoji or symbols" >&2
+  echo "  -b baud  send no more than a serial line of that speed carries" >&2
+  echo "           (for a real terminal on a serial line, say -b 9600);" >&2
+  echo "           draws in ASCII, as -a" >&2
+  exit 2
+}
+
 main() {
   ascii=0   # 1 to draw in ASCII (see set_glyphs)
-  case "$*" in
-    "") ;;
-    -a) ascii=1 ;;
-    *)
-      echo "Usage: $0 [-a]   (-a: plain ASCII, without emoji or symbols)" >&2
-      exit 2 ;;
-  esac
+  baud=0    # the line's speed, to keep within (see draw); 0 for no limit
+  while [ $# -gt 0 ]; do
+    case $1 in
+      -a) ascii=1 ;;
+      -b)
+        case ${2-} in
+          ''|*[!0-9]*) usage ;;
+        esac
+        # A slow line wants as few bytes as possible: ASCII's characters
+        # are 1 each, where symbols are 2 or 3
+        baud=$2 ascii=1
+        shift ;;
+      *) usage ;;
+    esac
+    shift
+  done
+  credit=0
   init
 
   while [ $quit -eq 0 ]; do

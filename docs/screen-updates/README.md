@@ -17,34 +17,56 @@ and `[`:
 
 | Sequence | Bytes | Effect |
 |---|---|---|
-| `ESC[?2026h` | 8 | Start a synchronized update: the terminal holds its display until the end marker (terminals without it ignore both markers) |
+| `ESC[?2026h` | 8 | Start a synchronized update: the terminal holds its display until the end marker (only sent if the terminal does them: see below) |
 | `ESC[?2026l` | 8 | End the update: the terminal shows the changes all at once |
 | `ESC[row;colH` | 6–8 | Move the cursor to row, column (counting from 1) |
-| `ESC[32m`, `ESC[31;4m`, `ESC[7m` … | 4–7 | Set colors and attributes: green, red, underline, reverse video |
+| `ESC[nA`, `B`, `C`, `D` | 3–5 | Move the cursor up, down, right or left n places (n left out if 1) |
+| `BS` (`0x08`) | 1 | Move the cursor left one place |
+| `ESC[32m`, `ESC[31;4m`, `ESC[2m` … | 4–7 | Set colors and attributes: green, red, underline, dim, reverse video |
 | `ESC[0m` | 4 | Reset the colors and attributes |
 | `ESC[H`, `ESC[2J` | 3, 4 | Move the cursor to the top left, and clear the screen (only for a full redraw, or the "too small" message) |
 | `BEL` (`0x07`) | 1 | Ring the bell |
 
-Every change starts with its own cursor move. The text after it overwrites
-only the cells it lands on, so most of the screen is never sent.
+Every change starts with a cursor move. The text after it overwrites only
+the cells it lands on, so most of the screen is never sent.
 
-For example, when the player's shot climbs a row:
+For example, when the player's shot climbs a row (on a terminal without
+synchronized updates):
 
 ```
-ESC[?2026h      start the update               8 bytes
 ESC[14;31H      cursor to row 14, column 31    8 bytes
 ␠               a space: blank the old shot    1 byte
-ESC[13;31H      cursor to row 13, column 31    8 bytes
+ESC[A BS        cursor up one, and back one    4 bytes
 ¡               the shot (2 bytes in UTF-8)    2 bytes
-ESC[?2026l      end the update                 8 bytes
                                               ─────────
-                                              35 bytes
+                                              15 bytes
 ```
 
-Only 3 of those 35 bytes are the characters themselves (the space, and
-the shot's 2). The other 32 are the markers and cursor moves. That's why
-a frame is tens of bytes even when a single character changes: most of it
-is the overhead around a few characters.
+Only 3 of those 15 bytes are the characters themselves (the space, and
+the shot's 2). The rest are cursor moves: most of a frame is the overhead
+around a few characters. Where the terminal does synchronized updates,
+the markers add 16 bytes to every frame sent.
+
+### Moving the cursor
+
+The game keeps track of where the cursor is, from where the last text it
+wrote ended, and moves it to the next change the shortest way: not at all
+if it's already there, up, down, left or right if that's shorter, and to
+the row and column otherwise. It uses only moves the VT100 had, so it
+works on old terminals too.
+
+Where the cursor is isn't known after a whole layer is sent (the moves are
+in the layer's text), after a full redraw, or after text that reaches the
+terminal's last column (where terminals differ over what the cursor does
+next). The next move is then always to the row and column.
+
+### Synchronized updates
+
+At startup, along with asking the terminal's size, the game asks whether
+it does synchronized updates (`ESC[?2026$p`). A terminal that does answers
+before it gives the size; one that doesn't know the question ignores it.
+So there's no waiting for an answer that won't come. The markers are sent
+only to a terminal that says it does them.
 
 ## Two kinds of content
 
@@ -104,22 +126,53 @@ program.
    piece is ever on the scores' or the ground's rows.) Only the pieces
    with a dirty cell are sent: so a piece is sent when it changes, when
    something has been drawn over it, or when a piece that overlapped it
-   has gone. Pieces are sent in a
-   fixed order, so one that overlaps another still covers it. If the whole
-   formation or all the shields are redrawn, every piece is sent.
-4. **Sending.** The frame is wrapped in the synchronized-update markers,
-   with the bell if it's due. If there's nothing in it and no bell,
-   nothing at all is sent, not even the markers.
+   has gone. Pieces are sent in a fixed order, so one that overlaps
+   another still covers it. If the whole formation or all the shields are
+   redrawn, every piece is sent.
+4. **Sending.** The frame is sent with the bell if it's due, and wrapped
+   in the synchronized-update markers if the terminal does them. If
+   there's nothing in it and no bell, nothing at all is sent.
 
-Because blanks and layers come before pieces, the things that move always
-end up on top.
+Blanks are never where a layer is drawn, so the two can go in either
+order. Pieces go last, so the things that move always end up on top.
+
+## Keeping to a line speed
+
+On a real terminal on a serial line, the game can be told the line's speed
+(`-b 9600`, say). It draws in ASCII then, as its characters take 1 byte
+each, not 2 or 3. And it keeps a credit of bytes: each frame adds what
+the line carries in a frame's time (9,600 baud is 960 bytes a second, at
+10 bits a byte), and each frame sent takes off its size. While the credit
+is below zero, frames aren't sent. A frame's time isn't taken to be
+exactly a sixtieth of a second: it's as last measured against the clock
+(every couple of seconds; see `pace` in `sh_invaders.sh`), so the budget
+keeps to real seconds even if the frame rate drifts.
+
+Nothing is lost by not sending a frame: everything is compared with what
+was last sent, so the next frame sent carries all the changes since. The
+screen just updates less often when there's a lot to send.
+
+A full redraw is always sent. To get the game itself on screen sooner,
+the scenery (the playfield's sides, the headings and the controls line)
+is then left out of it, and sent a part a frame afterwards: the headings,
+the controls, then the sides 4 rows at a time. Nothing else is ever drawn
+there, so it can come in any order. At 9,600 baud the title screen starts
+typing out after a quarter of a second, rather than after nearly a second,
+and its scenery is all there a second later. A new game, with the whole
+formation and shields to send, still takes the line about a second.
+
+Up to a tenth of a second's credit can be saved up, so short bursts go
+straight out. As a frame's size isn't known until it's built, one can
+overrun the credit, so the line can briefly hold a little more than a
+second's worth.
 
 ## Full redraws
 
 At startup, on a resize, for a new game, back at the title screen, and
 when the T key switches the characters used, the screen is cleared and
 everything is drawn afresh. The game forgets what it had sent, so
-everything is sent.
+everything is sent (with a line speed set, the scenery over the next few
+frames: see above).
 
 ## Special screens
 
@@ -132,16 +185,22 @@ everything is sent.
 
 ## Typical traffic
 
-| | Bytes sent |
-|---|---|
-| A frame with nothing changed | 0 |
-| The player's shot climbing a row | about 35 |
-| The median frame sent in play | about 37 |
-| On average in play | about 1.6 KB a second |
-| A frame as the title types out | about 37 |
-| A full redraw | 1 KB or more |
+| | Without synchronized updates | With them |
+|---|---|---|
+| A frame with nothing changed | 0 | 0 |
+| The player's shot climbing a row | about 15 bytes | about 31 bytes |
+| The median frame sent in play | about 14–17 bytes | about 32 bytes |
+| On average in play | about 0.7–1 KB a second | about 1.5 KB a second |
+| A full redraw (in ASCII) | about 0.8 KB for the title, 1.6 KB for a new game | the same, plus 16 bytes |
+
+With `-b 9600`, play averaged about 600–700 bytes a second, with about
+2 frames in 5 sent: the screen updated every frame or two
+usually, and within 5 frames 9 times in 10.
 
 These were measured from the game's output, in about a minute of play.
-The same runs checked the scheme: every frame was replayed in a terminal
-emulator (pyte), alongside a stream that sent every piece every frame, and
-the screens matched after every frame, under dash, bash, ksh and zsh.
+The same runs checked the scheme: every frame the game sent was replayed
+in a terminal emulator (pyte), and compared with a full redraw of the
+game's state at that frame (except while the scenery was still to come,
+when the screen is meant to differ). The screens matched every time,
+under dash, bash, ksh and zsh, in ASCII and emoji, with and without
+synchronized updates and a line speed.

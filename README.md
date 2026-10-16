@@ -14,6 +14,11 @@ marked it as executable.
 To make it output pure ASCII, without any of that modern nonsense like
 emoji or Unicode symbols, add `-a` (or press `T` while playing).
 
+Playing on a real terminal on a serial line? Give its speed with `-b`
+(`-b 9600`, say), and the game sends no more than the line can carry,
+updating the screen less often when there's a lot to send. It draws in
+ASCII then, which takes fewer bytes.
+
 Tested in `sh`, `dash`, `bash` (including the bash 3.2 that comes with
 macOS) and Korn shells (including OpenBSD’s `sh`). In `zsh`, use
 `zsh --emulate sh sh_invaders.sh`.
@@ -88,10 +93,13 @@ steps, for a little bit of CPU saving.
 
 The screen isn’t cleared between frames, so it doesn’t flicker even in
 terminals without synchronized output[^terminal]. Only what has changed is
-sent, so the game’s [baud rate](https://en.wikipedia.org/wiki/Baud) is low.
-A typical frame is under 50 bytes, and a frame where nothing has changed
-isn’t sent at all. In play it averages about 1.6 KB a second, which would
-fit down a 19,200-baud serial line.
+sent, with the cursor moved the shortest way, so the game’s
+[baud rate](https://en.wikipedia.org/wiki/Baud) is low. A typical frame is
+under 20 bytes (16 more where the terminal does synchronized output), and
+a frame where nothing has changed isn’t sent at all. In play it averages
+about 1 KB a second (1.5 KB with synchronized output). With `-b 9600` it
+plays on a 9,600-baud line, the speed old terminals like the VT100 were
+often used at.
 
 [^terminal]: (Side-eyes to `Terminal.app`...)
 
