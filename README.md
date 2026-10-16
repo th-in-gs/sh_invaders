@@ -139,6 +139,11 @@ As in the arcade:
   parts of the ground erode), it’s chosen with the arcade’s frequencies.
 - One player only, and no sound apart from the terminal bell when you’re
   hit or win a cannon.
+- Holding a key down to move repeatedly only works thanks to key-repeat.
+  A terminal sees only incoming characters, not key downs and ups.
+  This also means that if you press fire while holding a move key, the move
+  will stop; the keyboard only repeats the last key pressed.
+  *Mash the movement keys instead of holding them down for better gameplay!*
 
 #!/bin/sh Invaders was mostly written by Claude, although with a *surprising
 number* of clarifications, redirections, pushes for accuracy and aesthetic
