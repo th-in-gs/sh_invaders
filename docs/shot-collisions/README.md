@@ -21,7 +21,7 @@ loose: it describes the shots as "slow straight ones, fast straight ones
 and wiggly ones", but all three move at the same speed. Other accounts:
 
 - [PrimeTime Amusements][prime]: invader shots "will frequently survive
-  your own and keep hurdling towards you, especially if they're the
+  your own and keep hurdling toward you, especially if they're the
   stronger version of enemy fire: the wiggly-line missile" (apparently a
   paraphrase of the guide above).
 - [StrategyWiki][sw]: "it can be either your bullet or the alien's that
@@ -158,7 +158,8 @@ The play guide has it backwards for normal speed. The squiggly is the
 *easiest* shot to shoot down, at every alignment. Its pattern is dense, so
 it almost always runs into your shot's explosion.
 
-At fast speed it survives about as often as the others: it jumps far
+At fast speed it survives more often than either of the others (39%,
+against 37% for the plunger and 12% for the rolling shot): it jumps far
 enough to clear the explosion. Fast speed comes at the end of every wave,
 which is when meetings are most dangerous and memorable. That, and the
 squiggly being the most eye-catching shot, may be where the folklore comes
@@ -168,7 +169,7 @@ from. This is speculation.
 
 "#!/bin/sh Invaders" only knows shot positions to the terminal cell. A
 column is 4 arcade pixels wide (224 px / 56 columns). `check_bombs` (in
-`space_invaders.sh`) sees a
+`sh_invaders.sh`) sees a
 meeting when both shots are in the same column and your shot is in the
 invader shot's row or the one above.
 
@@ -199,14 +200,16 @@ the cell is effectively uniform.
 | Plunger | 28% | 28% | 12% | 32% |
 | Rolling | 46% | 9% | 6% | 40% |
 
-The game (`meet_outcome` in `space_invaders.sh`) chooses among the four
-outcomes with these frequencies, rounded to whole percentages, using a
-count of frames since startup: `frame % 100`. Which frame two shots meet
-on depends on the player's timing, to the 1/60 s, much as the arcade's
-pixel positions do. So there's no random number generator, and nothing
-beyond POSIX sh (`/dev/urandom` and `$RANDOM` aren't POSIX). Invader shots
-move every third frame, but 100 has no factor of 3, so that doesn't skew
-the choice.
+The game (`meet_outcome` in `sh_invaders.sh`) chooses among the four
+outcomes with these frequencies, using a count of frames since startup:
+`frame % 100`. So each row is rounded to whole percentages that total 100,
+which moves two figures by 1: rolling, both destroyed, is 35% (not 34%) at
+normal speed, and rolling, both carry on, is 45% (not 46%) at fast speed.
+Which frame two shots meet on depends on the player's timing, to the
+1/60 s, much as the arcade's pixel positions do. So there's no random
+number generator, and nothing beyond POSIX sh (`/dev/urandom` and
+`$RANDOM` aren't POSIX). Invader shots move every third frame, but 100 has
+no factor of 3, so that doesn't skew the choice.
 
 A pair of shots that pass each other may still be level on the next
 frame. So each invader shot type remembers which player shot passed it,
@@ -218,7 +221,7 @@ pixels lower, running into the explosion. A surviving player shot carries
 on from just above the meeting. At terminal resolution, applying the
 outcome at the meeting looks the same.
 
-## Not modelled
+## Not modeled
 
 All of these are rare:
 

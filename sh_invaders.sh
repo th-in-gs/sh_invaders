@@ -1,21 +1,28 @@
 #!/bin/sh
-# #!/bin/sh INVADERS: a Space Invaders clone in POSIX shell
+
+
+# This is "#!/bin/sh Invaders": a Space Invaders clone in pure POSIX shell!
+#
 # Emoji invaders, '¡' for bullets, Unicode ship; or plain ASCII, with -a
 # (T switches between them as it runs).
 #
 # Geometry and timings follow the 1978 arcade game (224x256 pixel screen),
 # scaled so that one terminal column is ~4 pixels: the playfield is a fixed
-# 56 columns wide, centred in the terminal, and up to 32 rows tall.
+# 56 columns wide, centered in the terminal, and 24-32 rows tall.
+#
+
+# Conventions:
 #
 # "Arcade space" is the arcade's own screen: 256 pixels tall, with heights
 # (Y) measured in pixels up from the bottom, as in its ROM. Positions like
 # the shields' Y=48 are given in arcade space and mapped to rows for the
-# current playfield height (y2row). Shots keep their heights in arcade space,
-# so they move at the arcade's speeds whatever the playfield height; their
-# rows are worked out only to draw them and check for hits.
+# current playfield height (see y2row). Shots keep their heights in arcade
+# space, so they move at the arcade's speeds whatever the playfield height;
+# their rows are worked out only to draw them and check for hits.
 #
-# The game runs at 60 frames a second, like the arcade, so the arcade's
+# The game runs at 60 frames per second, like the arcade, so the arcade's
 # timings (in frames) are used as they are.
+
 
 set -u
 set -f  # no globbing when splitting state strings
@@ -202,7 +209,7 @@ init() {
 # terminal size in $rows and $cols.
 layout() {
   # Playfield: field_w columns (plus a border each side) by field_h rows,
-  # centred. The arcade screen's aspect would be 32 rows; 24 is the minimum.
+  # centered. The arcade screen's aspect would be 32 rows; 24 is the minimum.
   field_h=$rows
   [ $field_h -gt 32 ] && field_h=32
   x0=$(( (cols - field_w - 2) / 2 + 1 ))  # left border column
@@ -605,9 +612,9 @@ erode_ground() {
   ground_dirty=1
 }
 
-# Sets $bcol to the colour of the arcade's screen overlay at row $1: red at
+# Sets $bcol to the color of the arcade's screen overlay at row $1: red at
 # the top (from the saucer's lane up), green from the shields down.
-boom_colour() {
+boom_color() {
   if [ $1 -le $saucer_row ]; then
     bcol="${ESC}[31m"
   elif [ $1 -ge $shield_top ]; then
@@ -799,7 +806,7 @@ end_game() {
 load_hiscore() {
   hi=0
   hi_file=""
-  [ -n "${HOME:-}" ] && hi_file="$HOME/.space_invaders_hiscore"
+  [ -n "${HOME:-}" ] && hi_file="$HOME/.sh_invaders_hiscore"
   [ -n "$hi_file" ] && [ -r "$hi_file" ] || return
   { read -r hi < "$hi_file"; } 2>/dev/null || hi=0
   case $hi in
@@ -1074,7 +1081,7 @@ drop_bomb() {
 
   case $bt in
     r)
-      # Formation column (1-11) over the player's centre (in arcade
+      # Formation column (1-11) over the player's center (in arcade
       # pixels, from the reference), clamped to the formation (the arcade
       # uses column 11 when the player is beyond it)
       x=$(( (ship_col + 1 - left) * 4 + 2 - rack_px ))
@@ -1580,8 +1587,8 @@ draw() {
     put $1 $2 1 "$g"
   done
 
-  # Explosions, in the overlay's colour where they are. An invader's is 4
-  # columns wide like the arcade's 16-pixel starburst, centred on the
+  # Explosions, in the overlay's color where they are. An invader's is 4
+  # columns wide like the arcade's 16-pixel starburst, centered on the
   # invader (but kept inside the borders), and a single picture like the
   # arcade's. The player's shot's is bigger than invader shots', as in the
   # arcade.
@@ -1591,16 +1598,16 @@ draw() {
     el=$g_boom_l em="**" er=$g_boom_r w=4
     if [ $ic -lt $left ]; then el=""; ic=$left; w=$((w - 1)); fi
     if [ $((${inv_boom_at#*:} + 2)) -gt $right ]; then er=""; w=$((w - 1)); fi
-    boom_colour $ir
+    boom_color $ir
     put $ir $ic $w "${bcol}${el}${em}${er}${ESC}[0m"
   fi
   if [ $shot_boom -gt 0 ]; then
-    boom_colour ${shot_boom_at%:*}
+    boom_color ${shot_boom_at%:*}
     put ${shot_boom_at%:*} ${shot_boom_at#*:} 1 "$bcol$g_shot_boom${ESC}[0m"
   fi
   for e in $bomb_booms; do
     t=${e#*:}
-    boom_colour ${e%%:*}
+    boom_color ${e%%:*}
     put ${e%%:*} ${t%%:*} 1 "${bcol}*${ESC}[0m"
   done
 
@@ -1735,12 +1742,12 @@ arcade_text() {
 # COIN" becomes the keys to press, shown straight away.
 draw_title() {
   mid_c=$((left + field_w / 2))
-  # Centre the 17 rows of text between the score line and the ground
+  # Center the 17 rows of text between the score line and the ground
   avail=$((ground_row - top_row - 1))
   r0=$((top_row + 1 + (avail - 17) / 2))
   [ $r0 -le $top_row ] && r0=$((top_row + 1))
 
-  # Each line: row offset, column ("c" to centre), icon (drawn when typing
+  # Each line: row offset, column ("c" to center), icon (drawn when typing
   # reaches the line), number of leading characters to leave unspaced, text.
   # "|" separates fields. Icons are S for the saucer, an invader's kind
   # (see spawn_wave), or "-" for none. Text is letter-spaced to the
