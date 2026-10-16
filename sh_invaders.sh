@@ -553,6 +553,9 @@ check_shields() {
 #  - An invader shot that hits something stays where it hit until its next
 #    turn (0612), then explodes, and is gone three turns later (0644).
 #    Until then its type can't fire again.
+#  - One difference: a shot that hits a shield or the ground damages it at
+#    once. In the arcade the shot just lands on their pixels; it's erasing
+#    the explosion when it ends (0436, 0675) that clears them.
 # ---------------------------------------------------------------------------
 
 # The player's shot blows up at row $1, column $2.

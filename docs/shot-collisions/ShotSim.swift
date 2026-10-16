@@ -25,7 +25,7 @@
 //   invaders: 08D8), draw with collision; a collision starts it blowing up.
 //   Blowing up (0644), also one run every third frame: the blow-up count
 //   (4) drops to 3 on the next run, which erases the shot and draws the
-//   explosion 1CDC at x-2, y-2; at 0, two runs later, the explosion is erased.
+//   explosion 1CDC at x-2, y-2; at 0, three runs later, it is erased.
 //
 // Alignment. The player shot is always at 0x28 + 4k. An invader shot
 // starts 10 px below its invader (05B1), whose y is a multiple of 8 (rack

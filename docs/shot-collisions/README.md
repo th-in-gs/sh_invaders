@@ -81,7 +81,7 @@ A run (`05C1`–`0617`) erases the shot, advances its picture, moves it by
 `1B7E`; the disassembly's "Normally FF" comment is wrong. With 8 or fewer
 invaders it is `FB` (−5), set at `08D8`. If the draw collides, the shot is
 destroyed. It blows up on its later runs (`0644`): the next one erases it
-and draws its explosion (`1CDC`, 6 × 8) 2 px left and 2 px down; two runs
+and draws its explosion (`1CDC`, 6 × 8) 2 px left and 2 px down; three runs
 after that, the explosion is erased.
 
 So an invader shot survives only by never landing on lit pixels: neither
