@@ -203,6 +203,7 @@ init() {
   # Redo the layout when the window is resized (see handle_resize)
   resized=0
   too_small=0
+  sent_small=""   # the "too small" message last sent (see draw)
   trap 'resized=1' WINCH 2>/dev/null || true
 
   printf '%s' "${ESC}[?1049h${ESC}[?25l"   # alternate screen; hide the cursor
@@ -373,6 +374,7 @@ remap_row() {
 # the game pauses (keeping the old layout) until it is big enough again.
 handle_resize() {
   resized=0
+  sent_small=""   # (the terminal may have redrawn the screen)
   printf '%s' "${ESC}[?25l"   # hide the cursor again (see cleanup)
   o_rows=$rows o_cols=$cols
   if ! term_size; then
@@ -1426,7 +1428,11 @@ send_frame() {
 
 draw() {
   if [ $too_small -eq 1 ]; then
-    printf '%s' "${ESC}[?2026h${ESC}[H${ESC}[2JWindow too small: ${cols}x${rows}, need at least $((field_w + 2))x24. Paused (q quits).${ESC}[?2026l"
+    t="Window too small: ${cols}x${rows}, need at least $((field_w + 2))x24. Paused (q quits)."
+    if [ "$t" != "$sent_small" ]; then
+      printf '%s' "${ESC}[?2026h${ESC}[H${ESC}[2J$t${ESC}[?2026l"
+      sent_small=$t
+    fi
     return
   fi
   inv_touched=0 cleared=0
@@ -1435,7 +1441,7 @@ draw() {
     cleared=1
     prev_items="" prev_pieces=""
     # Nothing has been sent onto the cleared screen yet
-    sent_hud="" sent_ground="" sent_shields="" sent_title=""
+    sent_hud="" sent_ground="" sent_shields=""
     inv_touched=1
     redraw_all=0
   else
@@ -1492,43 +1498,38 @@ draw() {
   fi
 
   # The ground line, worn by invader shots blowing up on it: each column
-  # shows its 4 pixels as best it can. Re-rendered only when it changes.
+  # shows its 4 pixels as best it can (whole on the title screen).
+  # Re-rendered only when it changes.
   if [ $mode = title ]; then
-    layers="$layers$ground_full"
-  else
-    if [ $ground_dirty -eq 1 ]; then
-      ground_frame="${ESC}[32m${ESC}[$ground_row;${left}H"
-      i=0
-      while [ $i -lt $field_w ]; do
-        eval "g=\$gnd_$i"
-        case $g in
-          15) g=$g_gnd ;;
-          0) g=' ' ;;
-          1|2|3) g=$g_gnd_l ;;   # left half only
-          4|8|12) g=$g_gnd_r ;;  # right half only
-          *) g=$g_gnd_gaps ;;    # gaps across the column
-        esac
-        ground_frame="${ground_frame}${g}"
-        i=$((i + 1))
-      done
-      ground_frame="${ground_frame}${ESC}[0m"
-      ground_dirty=0
-    fi
-    if [ "$ground_frame" != "$sent_ground" ]; then
-      layers="$layers$ground_frame"
-      sent_ground=$ground_frame
-    fi
+    ground_frame=$ground_full
+  elif [ $ground_dirty -eq 1 ]; then
+    ground_frame="${ESC}[32m${ESC}[$ground_row;${left}H"
+    i=0
+    while [ $i -lt $field_w ]; do
+      eval "g=\$gnd_$i"
+      case $g in
+        15) g=$g_gnd ;;
+        0) g=' ' ;;
+        1|2|3) g=$g_gnd_l ;;   # left half only
+        4|8|12) g=$g_gnd_r ;;  # right half only
+        *) g=$g_gnd_gaps ;;    # gaps across the column
+      esac
+      ground_frame="${ground_frame}${g}"
+      i=$((i + 1))
+    done
+    ground_frame="${ground_frame}${ESC}[0m"
+    ground_dirty=0
+  fi
+  if [ "$ground_frame" != "$sent_ground" ]; then
+    layers="$layers$ground_frame"
+    sent_ground=$ground_frame
   fi
 
-  # The title screen only grows as it types out, so needs no tracking: it's
-  # sent whole when it has grown
+  # The title screen's text is drawn like the things that move, so only
+  # what has typed out since the last frame is sent
   if [ $mode = title ]; then
     draw_title
-    if [ "$f" = "$sent_title" ]; then
-      f=""
-    else
-      sent_title=$f
-    fi
+    changed_pieces
     send_frame "$layers$f"
     return
   fi
@@ -1790,11 +1791,16 @@ draw() {
     done
   fi
 
-  # The things that move: just those that are new or changed, and any
-  # under something else drawn this frame (or last: a thing that's gone may
-  # have been drawn over them). As layers are drawn first, a whole
-  # formation or shields drawn afresh could be over any of them, so then
-  # they're all drawn.
+  changed_pieces
+  send_frame "$blanks$layers$f"
+}
+
+# Sets $f to draw the things that move ($pieces, see put): just those that
+# are new or changed, and any under something else drawn this frame (or
+# last: a thing that's gone may have been drawn over them). As layers are
+# drawn first, a whole formation or shields drawn afresh could be over any
+# of them, so then they're all drawn.
+changed_pieces() {
   if [ $inv_touched -eq 1 ]; then
     dirty=all
   else
@@ -1816,8 +1822,6 @@ draw() {
   done
   unset IFS
   prev_pieces=$pieces
-
-  send_frame "$blanks$layers$f"
 }
 
 # Sets $pre to the first $2 characters of $1 (ASCII text) without a
@@ -1894,9 +1898,9 @@ draw_title() {
     width=$((plain + 2 * (${#text} - plain) - 1))
     [ "$lc" = c ] && lc=$((mid_c - width / 2))
     case $icon in
-      S) f="$f${ESC}[$lr;$((lc - 6))H${ESC}[31;4m$g_saucer${ESC}[0m" ;;
+      S) put $lr $((lc - 6)) 4 "${ESC}[31;4m$g_saucer${ESC}[0m" ;;
       -) ;;
-      *) eval "g=\$g_inv_$icon"; f="$f${ESC}[$lr;$((lc - 4))H$g" ;;
+      *) eval "g=\$g_inv_$icon"; put $lr $((lc - 4)) 2 "$g" ;;
     esac
     # Letters shown so far: unspaced ones take 1 column, spaced ones 2
     if [ $left_cols -le $plain ]; then
@@ -1905,12 +1909,12 @@ draw_title() {
       n=$((plain + (left_cols - plain + 1) / 2))
     fi
     arcade_text "$text" $n $plain
-    f="$f${ESC}[$lr;${lc}H$sp"
+    put $lr $lc ${#sp} "$sp"
     left_cols=$((left_cols - plain - 2 * (${#text} - plain)))
   done
 
   arcade_text "PRESS R TO PLAY, Q TO QUIT" 99
-  f="$f${ESC}[$((r0 + 16));$((mid_c - 25))H$sp"
+  put $((r0 + 16)) $((mid_c - 25)) ${#sp} "$sp"
 }
 
 # ---------------------------------------------------------------------------
