@@ -87,9 +87,11 @@ fast enough machine it also sleeps every third frame, locked to those
 steps, for a little bit of CPU saving.
 
 The screen isn’t cleared between frames, so it doesn’t flicker even in
-terminals without synchronized output[^terminal] and the game’s
-[baud rate](https://en.wikipedia.org/wiki/Baud) is low - a typical frame is
-about 100 bytes.
+terminals without synchronized output[^terminal]. Only what has changed is
+sent, so the game’s [baud rate](https://en.wikipedia.org/wiki/Baud) is low.
+A typical frame is under 50 bytes, and a frame where nothing has changed
+isn’t sent at all. In play it averages about 1.6 KB a second, which would
+fit down a 19,200-baud serial line.
 
 [^terminal]: (Side-eyes to `Terminal.app`...)
 

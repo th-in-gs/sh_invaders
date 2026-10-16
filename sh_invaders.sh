@@ -29,6 +29,8 @@ set -f  # no globbing when splitting state strings
 
 ESC=$(printf '\033')
 BEL=$(printf '\007')
+NL='
+'
 
 old_stty=""     # the terminal's settings, to restore (see init)
 alt_screen=0    # 1 once on the alternate screen
@@ -1325,14 +1327,15 @@ check_saucer() {
 # the last one:
 #  - Things that move (the cannon, shots, explosions, the saucer) are
 #    tracked: each frame blanks just the cells that something covered last
-#    frame and nothing covers now.
+#    frame and nothing covers now, and draws just the things that have
+#    changed (or that something else is drawn over).
 #  - Layers that change only now and then (the score, the ground, the
 #    shields, the formation) are sent only when they change, or when
 #    something that moved has left a mark on them.
 # The screen is only cleared and drawn afresh when $redraw_all is set: at
 # startup, on a resize, for a new game, back at the title screen, and when
-# the glyphs are switched (the T key). And a frame just like the last isn't
-# sent at all (see send_frame).
+# the glyphs are switched (the T key). A frame with nothing changed isn't
+# sent at all.
 # ---------------------------------------------------------------------------
 
 # Sets $piece to draw the shield cell at row $1, column $2 as it now is
@@ -1376,11 +1379,11 @@ bomb_glyph() {
   esac
 }
 
-# Adds $4 to the frame at row $1, column $2, $3 columns wide, and records
-# the cells it covers ($items lists "row;col;width", $cov " row;col " per
-# cell).
+# Adds $4 to the frame at row $1, column $2, $3 columns wide ($pieces lists
+# them as "row;col;width text", one a line), and records the cells it
+# covers ($items lists "row;col;width", $cov " row;col " per cell).
 put() {
-  f="$f${ESC}[$1;$2H$4"
+  pieces="$pieces$1;$2;$3 ${ESC}[$1;$2H$4$NL"
   items="$items $1;$2;$3"
   pc=0
   while [ $pc -lt $3 ]; do
@@ -1389,14 +1392,35 @@ put() {
   done
 }
 
-# Sends the frame: $head, then $1 (the layers' changes and the cells to
-# blank), then $f (the things that move, all of them every frame). If
-# there's nothing but $f, and it's the same as last time, the screen
-# already shows it, so nothing is sent, sparing the terminal the redraw.
+# Sets $cells to the cells " row;col " covered by a piece "row;col;width"
+# ($1).
+piece_cells() {
+  zr=${1%%";"*}; t=${1#*";"}; zc=${t%";"*}; zw=${t#*";"}
+  cells=""
+  while [ $zw -gt 0 ]; do
+    cells="$cells $zr;$zc "
+    zc=$((zc + 1)); zw=$((zw - 1))
+  done
+}
+
+# Adds to $dirty the cells of the pieces in list $1 that aren't in list $2
+# (lists as in $pieces).
+dirty_unless_in() {
+  IFS=$NL
+  for p in $1; do
+    case "$NL$2" in
+      *"$NL$p$NL"*) ;;
+      *) piece_cells "${p%% *}"; dirty="$dirty$cells" ;;
+    esac
+  done
+  unset IFS
+}
+
+# Sends $head and then $1, unless there's nothing to send: no changes, no
+# bell and no clear.
 send_frame() {
-  if [ "$head$1" != "${ESC}[?2026h" ] || [ "$f" != "$sent_f" ]; then
-    printf '%s' "$head$1$f${ESC}[?2026l"
-    sent_f=$f
+  if [ -n "$1" ] || [ "$head" != "${ESC}[?2026h" ]; then
+    printf '%s' "$head$1${ESC}[?2026l"
   fi
 }
 
@@ -1409,15 +1433,15 @@ draw() {
   if [ $redraw_all -eq 1 ]; then
     head="${ESC}[?2026h${ESC}[H${ESC}[2J$scenery"
     cleared=1
-    prev_items=""
+    prev_items="" prev_pieces=""
     # Nothing has been sent onto the cleared screen yet
-    sent_hud="" sent_ground="" sent_shields="" sent_f=""
+    sent_hud="" sent_ground="" sent_shields="" sent_title=""
     inv_touched=1
     redraw_all=0
   else
     head="${ESC}[?2026h"
   fi
-  f="" items="" cov="" layers="" blanks=""
+  f="" pieces="" items="" cov="" layers="" blanks="" lay_cov=""
   [ $bell -eq 1 ] && { head="$head$BEL"; bell=0; }
 
   # Score values under their headings, zero-padded like the arcade's
@@ -1459,11 +1483,12 @@ draw() {
     if [ $boom -gt 0 ] || [ $bonus_flash -gt 0 ]; then
       n_txt="${ESC}[7m$lives${ESC}[0m"
     fi
-    spares=""
+    spares="" w=${#lives}
     i=1
-    while [ $i -lt $lives ]; do spares="$spares $g_ship"; i=$((i + 1)); done
-    put $((ground_row + 1)) $((left + 1)) $((${#lives} + 4 * (lives - 1))) \
-      "$n_txt$spares"
+    while [ $i -lt $lives ]; do
+      spares="$spares $g_ship" w=$((w + 4)) i=$((i + 1))
+    done
+    put $((ground_row + 1)) $((left + 1)) $w "$n_txt$spares"
   fi
 
   # The ground line, worn by invader shots blowing up on it: each column
@@ -1495,10 +1520,16 @@ draw() {
     fi
   fi
 
-  # The title screen only grows as it types out, so needs no tracking
+  # The title screen only grows as it types out, so needs no tracking: it's
+  # sent whole when it has grown
   if [ $mode = title ]; then
     draw_title
-    send_frame "$layers"
+    if [ "$f" = "$sent_title" ]; then
+      f=""
+    else
+      sent_title=$f
+    fi
+    send_frame "$layers$f"
     return
   fi
 
@@ -1616,7 +1647,8 @@ draw() {
         *)
           inv_frame="$inv_frame$piece"
           inv_cov="$inv_cov$cells"
-          inv_add="$inv_add $piece" ;;
+          inv_add="$inv_add $piece"
+          lay_cov="$lay_cov$cells" ;;
       esac
     done
   fi
@@ -1668,7 +1700,7 @@ draw() {
     fi
   done
 
-  [ -n "$sp" ] && f="$f${ESC}[$go_row;${gx}H$sp"
+  [ -n "$sp" ] && put $go_row $gx ${#sp} "$sp"
 
   # Blank what moved: cells covered last frame and not this one. Where a
   # moving thing was over an invader or a shield, that invader or shield
@@ -1726,6 +1758,7 @@ draw() {
     for z in $shield_changed $shield_redo; do
       shield_piece ${z%";"*} ${z#*";"}
       layers="$layers$piece"
+      lay_cov="$lay_cov $z "
       case $inv_cov in *" $z "*) inv_redo="$inv_redo $z" ;; esac
     done
     layers="$layers${ESC}[0m"
@@ -1750,13 +1783,41 @@ draw() {
             t=${invaders#"$pre $zr:$zc:"}
             eval "g=\$g_inv_${t%%:*}"
             piece="${ESC}[$zr;${zc}H$g"
-            case $layers in *"$piece"*) ;; *) layers="$layers$piece" ;; esac ;;
+            case $layers in *"$piece"*) ;; *) layers="$layers$piece" ;; esac
+            lay_cov="$lay_cov $zr;$zc  $zr;$((zc + 1)) " ;;
         esac
       done
     done
   fi
 
-  send_frame "$blanks$layers"
+  # The things that move: just those that are new or changed, and any
+  # under something else drawn this frame (or last: a thing that's gone may
+  # have been drawn over them). As layers are drawn first, a whole
+  # formation or shields drawn afresh could be over any of them, so then
+  # they're all drawn.
+  if [ $inv_touched -eq 1 ]; then
+    dirty=all
+  else
+    # The cells drawn by the layers, and those of things new, changed or
+    # gone
+    dirty=$lay_cov
+    dirty_unless_in "$pieces" "$prev_pieces"
+    dirty_unless_in "$prev_pieces" "$pieces"
+  fi
+  IFS=$NL
+  for p in $pieces; do
+    unset IFS
+    piece_cells "${p%% *}"
+    for z in $cells; do
+      case $dirty in
+        all|*" $z "*) f="$f${p#* }"; break ;;
+      esac
+    done
+  done
+  unset IFS
+  prev_pieces=$pieces
+
+  send_frame "$blanks$layers$f"
 }
 
 # Sets $pre to the first $2 characters of $1 (ASCII text) without a
