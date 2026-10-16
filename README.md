@@ -4,32 +4,7 @@
 POSIX shell**. As faithful to the 1978 arcade game as a grid of characters
 allows.
 
-```
-                 SCORE              HI-SCORE               WAVE
-                 0000                 0650                    1
-           │                                                        │
-           │                                                        │
-           │         👾  👾  👾  👾  👾  👾  👾  👾  👾  👾  👾     │
-           │                                                        │
-           │         🦀  🦀  🦀  🦀  🦀  🦀  🦀  🦀  🦀  🦀  🦀     │
-           │                                                        │
-           │         🦀  🦀  🦀  🦀  🦀  🦀  🦀  🦀  🦀  🦀  🦀     │
-           │                                                        │
-           │         🐙  🐙  🐙  🐙  🐙  🐙  🐙  🐙  🐙  🐙  🐙     │
-           │                                                        │
-           │         🐙  🐙  🐙  🐙  🐙  🐙  🐙  🐙  🐙  🐙  🐙     │
-           │                                 ┼                      │
-           │                                                        │
-           │                                                        │
-           │                                                        │
-           │        ▟*███▙     ▟████▙      ▟████▙     ▟████▒        │
-           │        ██  ██     ██  ██      ██  ██     ██  ██        │
-           │                                                        │
-           │                          ╱▲╲                           │
-            ──────╌╌────────────────────────────────────────────────
-             2 ╱▲╲
-                  MOVE: H/L OR ARROWS   FIRE: SPACE   QUIT: Q
-```
+![#!/bin/sh Invaders running in macOS Terminal: rows of emoji invaders above four green shields and the cannon](mac_screenshot.png)
 
 ## Launching
 
