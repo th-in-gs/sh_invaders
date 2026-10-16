@@ -494,6 +494,7 @@ handle_resize() {
 #   inv_boom, shot_boom: frames left of an invader's or the player's shot's
 #             explosion, at "row:col" $inv_boom_at, $shot_boom_at
 #   bomb_booms: space-separated "row:col:type:turns" invader shot explosions
+#             (see bomb_explodes)
 # ---------------------------------------------------------------------------
 
 # Restores all shields to full strength (at the start of each wave).
@@ -549,8 +550,9 @@ check_shields() {
 #    invader or the saucer, or misses and reaches Y=216 (03D7-03F7, 14E1).
 #    It's still the one shot allowed, so the player can't fire until it's
 #    gone.
-#  - An invader shot that hits something explodes on its next turn, and is
-#    gone three turns later (0644). Until then its type can't fire again.
+#  - An invader shot that hits something stays where it hit until its next
+#    turn (0612), then explodes, and is gone three turns later (0644).
+#    Until then its type can't fire again.
 # ---------------------------------------------------------------------------
 
 # The player's shot blows up at row $1, column $2.
@@ -560,7 +562,8 @@ shot_explodes() {
   shot_boom_at="$1:$2"
 }
 
-# An invader shot of type $3 blows up at row $1, column $2.
+# An invader shot of type $3 blows up at row $1, column $2. Its turns count
+# down from 4: at 4 it's still the shot, then 3 turns of explosion.
 bomb_explodes() {
   bomb_booms="$bomb_booms $1:$2:$3:4"
 }
@@ -947,10 +950,11 @@ check_collisions() {
 # steps through the live invaders, from the bottom left along each row and
 # up, putting each where the formation's reference now places it. Once the
 # cursor has been round them all, the reference moves (01A1): 2 pixels
-# across (3 to the right for a lone invader, 18F1), and also down a row if
-# the formation has reached an edge. So each move ripples through the
-# formation, bottom row first, and an invader moves a column (4 pixels)
-# every 2 x invaders frames.
+# across, and also down a row if the formation has reached an edge. So each
+# move ripples through the formation, bottom row first, and an invader
+# moves a column (4 pixels) every 2 x invaders frames. (A lone invader
+# moves 3 pixels to the right, but only once it has turned at the left
+# edge: the arcade picks the step as the formation turns, 18F1.)
 # Returns 0 if an invader moved to another cell; sets $landed=1 if it
 # reached $land_row.
 move_invaders() {
@@ -1304,7 +1308,8 @@ check_saucer() {
 #    shields, the formation) are sent only when they change, or when
 #    something that moved has left a mark on them.
 # The screen is only cleared and drawn afresh when $redraw_all is set: at
-# startup, on a resize, for a new game, and back at the title screen.
+# startup, on a resize, for a new game, back at the title screen, and when
+# the glyphs are switched (the T key).
 # ---------------------------------------------------------------------------
 
 # Sets $piece to draw the shield cell at row $1, column $2 as it now is
@@ -1322,6 +1327,30 @@ shield_piece() {
       esac ;;
   esac
   piece="${ESC}[$1;$2H$g"
+}
+
+# Sets $g to draw an invader shot of type $2 at row $1. The shots animate
+# as they fall, frame chosen by row, after the arcade's shot sprites:
+#   rolling   { | } |   a spike circling the shaft
+#   plunger   ┴ ┼ ┼ ┬   a crossbar climbing the shaft, then back to the foot
+#   squiggly  \ /       a zig-zag
+bomb_glyph() {
+  case $2 in
+    r)
+      case $(($1 % 4)) in
+        0) g='{' ;;
+        2) g='}' ;;
+        *) g='|' ;;
+      esac ;;
+    p)
+      case $(($1 % 4)) in
+        0) g=$g_pl_foot ;;
+        3) g=$g_pl_top ;;
+        *) g=$g_pl_mid ;;
+      esac ;;
+    *)
+      if [ $(($1 % 2)) -eq 0 ]; then g='\'; else g='/'; fi ;;
+  esac
 }
 
 # Adds $4 to the frame at row $1, column $2, $3 columns wide, and records
@@ -1564,39 +1593,21 @@ draw() {
     put ${b%:*} ${b#*:} 1 "$g_shot"
   done
 
-  # Invader shots animate as they fall, frame chosen by row, after the
-  # arcade's shot sprites:
-  #   rolling   { | } |   a spike circling the shaft
-  #   plunger   ┴ ┼ ┼ ┬   a crossbar climbing the shaft, then back to the foot
-  #   squiggly  \ /       a zig-zag
   for m in $bombs; do
     IFS=:
     set -- $m
     unset IFS
-    case $3 in
-      r)
-        case $(($1 % 4)) in
-          0) g='{' ;;
-          2) g='}' ;;
-          *) g='|' ;;
-        esac ;;
-      p)
-        case $(($1 % 4)) in
-          0) g=$g_pl_foot ;;
-          3) g=$g_pl_top ;;
-          *) g=$g_pl_mid ;;
-        esac ;;
-      *)
-        if [ $(($1 % 2)) -eq 0 ]; then g='\'; else g='/'; fi ;;
-    esac
+    bomb_glyph $1 $3
     put $1 $2 1 "$g"
   done
 
   # Explosions, in the overlay's color where they are. An invader's is 4
   # columns wide like the arcade's 16-pixel starburst, centered on the
   # invader (but kept inside the borders), and a single picture like the
-  # arcade's. The player's shot's is bigger than invader shots', as in the
-  # arcade.
+  # arcade's. The arcade's shot explosions are 8 pixels wide (the player's)
+  # and 6 (invaders'): each is a single cell here, told apart by its glyph.
+  # An invader shot shows as itself until its next turn (see
+  # bomb_explodes).
   if [ $inv_boom -gt 0 ]; then
     ir=${inv_boom_at%:*}; ic=$((${inv_boom_at#*:} - 1))
     # Widths by hand: in dash, ${#} counts bytes, and › and ‹ are 3
@@ -1611,9 +1622,16 @@ draw() {
     put ${shot_boom_at%:*} ${shot_boom_at#*:} 1 "$bcol$g_shot_boom${ESC}[0m"
   fi
   for e in $bomb_booms; do
-    t=${e#*:}
-    boom_color ${e%%:*}
-    put ${e%%:*} ${t%%:*} 1 "${bcol}*${ESC}[0m"
+    IFS=:
+    set -- $e
+    unset IFS
+    if [ $4 -eq 4 ]; then
+      bomb_glyph $1 $3
+      put $1 $2 1 "$g"
+    else
+      boom_color $1
+      put $1 $2 1 "${bcol}*${ESC}[0m"
+    fi
   done
 
   [ -n "$sp" ] && f="$f${ESC}[$go_row;${gx}H$sp"
