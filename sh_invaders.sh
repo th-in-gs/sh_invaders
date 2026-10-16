@@ -1320,8 +1320,10 @@ check_saucer() {
 }
 
 # ---------------------------------------------------------------------------
-# Rendering: build the whole frame in a string, then emit it in one go
+# Rendering: build the frame's changes in a string, then emit it in one go
 # (wrapped in synchronized-output escapes where the terminal supports them).
+# docs/screen-updates explains all this in more detail: keep it up to date
+# with changes here.
 #
 # The screen isn't cleared each frame: where the terminal doesn't support
 # synchronized output (Terminal.app, for one), it can show the screen
