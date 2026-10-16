@@ -1409,10 +1409,13 @@ bomb_glyph() {
 }
 
 # Adds $4 to the frame at row $1, column $2, $3 columns wide ($pieces lists
-# them as "row;col;width text", one a line), and records the cells it
-# covers ($items lists "row;col;width", $cov " row;col " per cell).
+# them as "row;col;width text", one a line), and in play records the cells
+# it covers ($items lists "row;col;width", $cov " row;col " per cell).
 put() {
   pieces="$pieces$1;$2;$3 $4$NL"
+  # The cells are for blanking what moved, which the title screen never
+  # needs (it only grows); its lines are long, so this saves a lot
+  [ $mode = title ] && return
   items="$items $1;$2;$3"
   pc=0
   while [ $pc -lt $3 ]; do
@@ -1938,6 +1941,11 @@ changed_pieces() {
   for p in $pieces; do
     unset IFS
     k=${p%% *}
+    # Most pieces have no dirty cell even in their row: a quick check first
+    case $dirty in
+      all|*" ${k%%";"*};"*) ;;
+      *) continue ;;
+    esac
     piece_cells "$k"
     for z in $cells; do
       case $dirty in
