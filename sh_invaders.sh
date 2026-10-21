@@ -2038,7 +2038,8 @@ draw() {
     for piece in $inv_add; do
       case $inv_frame in
         *"$piece"*)
-          t=${piece#"${ESC}["}; zr=${t%%";"*}; t=${t#*";"}
+          csi="${ESC}["
+          t=${piece#$csi}; zr=${t%%";"*}; t=${t#*";"}
           lay top $zr ${t%%H*} 2 "${t#*H}"
           inv_sent="$inv_sent $piece " ;;
       esac
