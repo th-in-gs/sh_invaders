@@ -136,11 +136,11 @@ check_locale() {
 
 # Sets the characters things are drawn with: emoji and Unicode symbols, or
 # ASCII if $ascii is 1. Each takes the same number of columns in both. The
-# invaders' types are kept as letters (o, c and s: see spawn_wave), lower
-# case for one picture and upper case for the other ($g_inv_o and $g_inv_O,
-# and so on), which toggle as the invader shifts a column (see
-# move_invaders). Only the ASCII invaders have different pictures: the emoji
-# are each a single picture, in both cases.
+# invaders' kinds are o, c and s (see inv_decode), lower case for one picture
+# and upper case for the other ($g_inv_o and $g_inv_O, and so on), which
+# toggle as the invader shifts a column (see move_invaders). Only the ASCII
+# invaders have different pictures: the emoji are each a single picture, in
+# both cases.
 set_glyphs() {
   if [ $ascii -eq 1 ]; then
     g_inv_o='{}' g_inv_O='[]'
@@ -442,13 +442,14 @@ handle_resize() {
     IFS=:
     set -- $inv
     unset IFS
+    inv_decode $3
     # Invaders the cursor has reached this sweep are at the new position
     if [ $k -lt $inv_cur ]; then
-      inv_place $4 $5 $rack_px $rack_y
+      inv_place $dr $dc $rack_px $rack_y
     else
-      inv_place $4 $5 $prev_rack_px $prev_rack_y
+      inv_place $dr $dc $prev_rack_px $prev_rack_y
     fi
-    moved="$moved $ir:$ic:$3:$4:$5"
+    moved="$moved $ir:$ic:$3"
     k=$((k + 1))
   done
   invaders=$moved
@@ -518,10 +519,10 @@ handle_resize() {
 
 # ---------------------------------------------------------------------------
 # Game state
-#   invaders: space-separated "row:col:kind:r:c" (kind o, c or s, for octopus,
-#             crab or squid, upper case for its other picture; r, c their
-#             place in the rack, 0,0 the bottom left), in the order the
-#             arcade moves them: from the bottom left, along each row and up
+#   invaders: space-separated "row:col:code" (code its place in the rack,
+#             r * 11 + c, 0 the bottom left: see inv_decode), in the order
+#             the arcade moves them: from the bottom left, along each row and
+#             up
 #   bullets:  the player's shot, "row:col" (at most one, as in the arcade);
 #             its height in arcade space is in $bullet_y
 #   bombs:    space-separated "row:col:type:steps:height" invader shots
@@ -716,8 +717,8 @@ col_fire_table() {
 # Points by invader type, as in the arcade (top row 30, middle 20, bottom 10)
 points() {
   case $1 in
-    s|S) pts=30 ;;
-    c|C) pts=20 ;;
+    s) pts=30 ;;
+    c) pts=20 ;;
     *) pts=10 ;;
   esac
 }
@@ -748,15 +749,10 @@ spawn_wave() {
   invaders=""
   r=0
   while [ $r -lt $inv_rows ]; do
-    case $r in
-      0|1) kind=o ;;   # the arcade's "octopus"
-      2|3) kind=c ;;   # "crab"
-      *) kind=s ;;     # "squid"
-    esac
     c=0
     while [ $c -lt $inv_cols ]; do
       inv_place $r $c $rack_px $rack_y
-      invaders="$invaders $ir:$ic:$kind:$r:$c"
+      invaders="$invaders $ir:$ic:$((r * 11 + c))"
       c=$((c + 1))
     done
     r=$((r + 1))
@@ -788,6 +784,30 @@ spawn_wave() {
 inv_place() {
   ic=$((left + ($3 + $2 * 16 + 4) / 4))
   ir=$(($4 - $1 * inv_spacing))
+}
+
+# Sets $dr, $dc, $dk and $dkl from invader code $1 (see the invaders list):
+# its rack row and column, its kind (o, c or s), and its kind in the case
+# that picks its picture (lower or upper: see set_glyphs). The code is
+# r * 11 + c (the arcade's 11 columns), plus 55 for the second picture.
+inv_decode() {
+  dn=$1 df=0
+  if [ $dn -ge 55 ]; then
+    df=1 dn=$((dn - 55))
+  fi
+  dr=$((dn / 11)) dc=$((dn % 11))
+  case $dr in
+    0|1) dk=o ;;
+    2|3) dk=c ;;
+    *) dk=s ;;
+  esac
+  if [ $df -eq 1 ]; then
+    case $dk in
+      o) dkl=O ;; c) dkl=C ;; *) dkl=S ;;
+    esac
+  else
+    dkl=$dk
+  fi
 }
 
 # Starts a new game (at launch, and on 'r' after game over).
@@ -1022,7 +1042,8 @@ check_collisions() {
           hit=1
           inv_boom=16
           inv_boom_at="$ir:$ic"
-          points "$3"
+          inv_decode $3
+          points "$dk"
           score=$((score + pts))
           inv_count=$((inv_count - 1))
           inv_events="$inv_events -$inv"
@@ -1066,7 +1087,8 @@ move_invaders() {
   IFS=:
   set -- $old
   unset IFS
-  inv_place $4 $5 $rack_px $rack_y
+  inv_decode $3
+  inv_place $dr $dc $rack_px $rack_y
   [ $ir -ge $land_row ] && landed=1
   # Invaders passing through the shields erase them, as in the arcade
   if [ $ir -ge $shield_top ] && [ $ir -le $shield_bot ]; then
@@ -1077,10 +1099,10 @@ move_invaders() {
   # As in the arcade (1597), the formation turns, dropping on its next
   # move, as soon as an invader's pixels reach X=213 or X=9. The types'
   # sprites are different widths in their 16-pixel slots (1C00-1C2F).
-  x=$((rack_px + $5 * 16))
-  case $3 in   # its leftmost and rightmost pixels in the slot
-    o|O) px_l=2 px_r=13 ;;
-    c|C) px_l=3 px_r=13 ;;
+  x=$((rack_px + $dc * 16))
+  case $dk in   # its leftmost and rightmost pixels in the slot
+    o) px_l=2 px_r=13 ;;
+    c) px_l=3 px_r=13 ;;
     *) px_l=4 px_r=11 ;;
   esac
   if [ $inv_dx -gt 0 ] && [ $((x + px_r)) -ge 213 ]; then
@@ -1090,17 +1112,16 @@ move_invaders() {
     [ $inv_count -eq 1 ] && inv_dx=3
   fi
   # Its picture toggles when the move takes it into another column, so each
-  # invader animates as it visibly shifts, not when it drops a row. (The
-  # case of its kind is its picture: see set_glyphs.)
-  k=$3
+  # invader animates as it visibly shifts, not when it drops a row.
+  n=$3
   if [ $ic -ne $2 ]; then
-    case $3 in
-      o) k=O ;; O) k=o ;;
-      c) k=C ;; C) k=c ;;
-      *) k=S ;; S) k=s ;;
-    esac
+    if [ $df -eq 1 ]; then
+      n=$((n - 55))
+    else
+      n=$((n + 55))
+    fi
   fi
-  new="$ir:$ic:$k:$4:$5"
+  new="$ir:$ic:$n"
   [ "$new" = "$old" ] && return 1
   # (Cutting at the end first and the known start second is much quicker
   # than ${invaders#*" $old"}, which is slow in long strings)
@@ -1222,8 +1243,9 @@ drop_bomb() {
     IFS=:
     set -- $inv
     unset IFS
-    if [ $5 -eq $((col - 1)) ]; then
-      lr=$4
+    inv_decode $3
+    if [ $dc -eq $((col - 1)) ]; then
+      lr=$dr
       break
     fi
   done
@@ -1900,7 +1922,8 @@ draw() {
       IFS=:
       set -- $inv
       unset IFS
-      eval "g=\$g_inv_$3"
+      inv_decode $3
+      eval "g=\$g_inv_$dkl"
       inv_frame="$inv_frame${CSI}$1;$2H$g"
       inv_cov="$inv_cov $1;$2  $1;$(($2 + 1)) "
     done
@@ -1911,7 +1934,8 @@ draw() {
       IFS=:
       set -- ${ev#?}
       unset IFS
-      eval "g=\$g_inv_$3"
+      inv_decode $3
+      eval "g=\$g_inv_$dkl"
       piece="${CSI}$1;$2H$g"
       cells=" $1;$2  $1;$(($2 + 1)) "
       case $ev in
@@ -2050,7 +2074,8 @@ draw() {
   if [ $inv_touched -eq 1 ]; then
     for inv in $invaders; do
       ir=${inv%%:*}; t=${inv#*:}; ic=${t%%:*}; t=${t#*:}
-      eval "g=\$g_inv_${t%%:*}"
+      inv_decode $t
+      eval "g=\$g_inv_$dkl"
       top_add $ir $ic 2 "$g"
     done
   else
@@ -2071,7 +2096,8 @@ draw() {
           *" $zr:$zc:"*)
             pre=${invaders%%" $zr:$zc:"*}
             t=${invaders#"$pre $zr:$zc:"}
-            eval "g=\$g_inv_${t%%:*}"
+            inv_decode ${t%%" "*}
+            eval "g=\$g_inv_$dkl"
             piece="${CSI}$zr;${zc}H$g"
             case $inv_sent in
               *" $piece "*) ;;
