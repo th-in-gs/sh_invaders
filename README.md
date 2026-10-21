@@ -23,6 +23,10 @@ Tested in `sh`, `dash`, `bash` (including the bash 3.2 that comes with
 macOS) and Korn shells (including OpenBSD’s `sh`). In `zsh`, use
 `zsh --emulate sh sh_invaders.sh`.
 
+BusyBox’s `sh` has a `read` that waits for a newline even with `min 0 time
+0`. Animations and input don’t work :-(. You might want to try another
+shell.
+
 ## Playing
 
 | Key                         | Action                                 |
