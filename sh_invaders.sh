@@ -32,6 +32,11 @@ BEL=$(printf '\007')
 NL='
 '
 BS=$(printf '\010')
+# The start of a control sequence, for matching in ${...#...} and ${...%...}
+# patterns. ($CSI, not a nested "${ESC}[" there, which some editors' syntax
+# highlighting can't follow. Quoted in the pattern: an unquoted [ starts a
+# bracket expression, which dash doesn't match and zsh rejects.)
+CSI="${ESC}["
 
 old_stty=""     # the terminal's settings, to restore (see init)
 alt_screen=0    # 1 once on the alternate screen
@@ -59,7 +64,7 @@ cleanup() {
   rc=$?
   trap - EXIT INT TERM HUP
   if [ $alt_screen -eq 1 ]; then
-    printf '%s' "${ESC}[?25h${ESC}[?1049l"   # show the cursor; main screen
+    printf '%s' "${CSI}?25h${CSI}?1049l"   # show the cursor; main screen
   fi
   if [ -n "$old_stty" ]; then
     stty "$old_stty" 2>/dev/null || stty sane 2>/dev/null || true
@@ -86,24 +91,21 @@ cleanup() {
 # 1 if none comes. $1, if given, is another question to ask first; all that
 # was read is left in $term_reply.
 term_size() {
-  printf '%s' "${1-}${ESC}7${ESC}[999;999H${ESC}[6n${ESC}8"
+  printf '%s' "${1-}${ESC}7${CSI}999;999H${CSI}6n${ESC}8"
   reply=""
   tries=0
   while [ $tries -lt 100 ]; do
     IFS= read -r chunk || true   # partial input (no newline) returns 1
     reply="$reply$chunk"
-    case $reply in *"${ESC}["*R*) break ;; esac
+    case $reply in *"${CSI}"*R*) break ;; esac
     sleep 0.02
     tries=$((tries + 1))
   done
   term_reply=$reply
   # The reply is the ESC[...R with two numbers (others may be keys pressed)
-  # ($csi, not a nested "${ESC}[" in ${reply#...}, which some editors'
-  # syntax highlighting can't follow)
-  csi="${ESC}["
   while :; do
     case $reply in
-      *"$csi"*) reply=${reply#*"$csi"} ;;
+      *"$CSI"*) reply=${reply#*"$CSI"} ;;
       *) break ;;
     esac
     rows=${reply%%";"*}; cols=${reply#*";"}; cols=${cols%%R*}
@@ -200,12 +202,12 @@ init() {
   # know the question ignores it, and as terminals answer in turn, any
   # answer comes before the size: so there's no waiting for one that
   # doesn't come.
-  if ! term_size "${ESC}[?2026\$p"; then
+  if ! term_size "${CSI}?2026\$p"; then
     exit_msg="The terminal didn't say what size it is (it didn't answer ESC[6n)."
     exit 1
   fi
   case $term_reply in
-    *"${ESC}[?2026;"[123]"\$y"*) sync_on="${ESC}[?2026h" sync_off="${ESC}[?2026l" ;;
+    *"${CSI}?2026;"[123]"\$y"*) sync_on="${CSI}?2026h" sync_off="${CSI}?2026l" ;;
     *) sync_on="" sync_off="" ;;
   esac
   if [ $cols -lt $((field_w + 2)) ] || [ $rows -lt 24 ]; then
@@ -221,7 +223,7 @@ init() {
   scenery_todo="" # scenery parts still to send (see draw)
   trap 'resized=1' WINCH 2>/dev/null || true
 
-  printf '%s' "${ESC}[?1049h${ESC}[?25l"   # alternate screen; hide the cursor
+  printf '%s' "${CSI}?1049h${CSI}?25l"   # alternate screen; hide the cursor
   alt_screen=1
   layout
   init_game
@@ -314,18 +316,18 @@ layout() {
 build_scenery() {
   # The playfield's sides. They're also cut into parts of 4 rows, for
   # sending a part at a time on a slow line (see draw).
-  scenery="${ESC}[2m" scenery_parts="" part=""
+  scenery="${CSI}2m" scenery_parts="" part=""
   r=$top_row
   while [ $r -lt $ground_row ]; do
-    t="${ESC}[$r;${x0}H$g_side${ESC}[$r;$((right + 1))H$g_side"
+    t="${CSI}$r;${x0}H$g_side${CSI}$r;$((right + 1))H$g_side"
     scenery="$scenery$t" part="$part$t"
     if [ $(( (r - top_row) % 4)) -eq 3 ]; then
-      scenery_parts="$scenery_parts${ESC}[2m$part${ESC}[0m$NL" part=""
+      scenery_parts="$scenery_parts${CSI}2m$part${CSI}0m$NL" part=""
     fi
     r=$((r + 1))
   done
-  [ -n "$part" ] && scenery_parts="$scenery_parts${ESC}[2m$part${ESC}[0m$NL"
-  scenery="$scenery${ESC}[0m"
+  [ -n "$part" ] && scenery_parts="$scenery_parts${CSI}2m$part${CSI}0m$NL"
+  scenery="$scenery${CSI}0m"
   # The ground line whole, for the title screen; in play it erodes (see
   # erode_ground)
   line=""
@@ -334,13 +336,13 @@ build_scenery() {
   ground_line=$line
   ground_dirty=1
   redraw_all=1
-  t="${ESC}[$hud_row;${sc_x}HSCORE${ESC}[$hud_row;${hi_x}HHI-SCORE"
-  t="$t${ESC}[$hud_row;${wv_x}HWAVE"
+  t="${CSI}$hud_row;${sc_x}HSCORE${CSI}$hud_row;${hi_x}HHI-SCORE"
+  t="$t${CSI}$hud_row;${wv_x}HWAVE"
   scenery="$scenery$t" scenery_parts="$t$NL$scenery_parts"
   # The row below the ground shows the cannons left (see draw); the
   # controls go below that
   help="MOVE: H/L OR ARROWS   FIRE: SPACE   QUIT: Q"
-  t="${ESC}[$((ground_row + 2));$((left + (field_w - ${#help}) / 2))H$help"
+  t="${CSI}$((ground_row + 2));$((left + (field_w - ${#help}) / 2))H$help"
   scenery="$scenery$t" scenery_parts="${scenery_parts%%"$NL"*}$NL$t$NL${scenery_parts#*"$NL"}"
 }
 
@@ -400,7 +402,7 @@ remap_row() {
 handle_resize() {
   resized=0
   sent_small=""   # (the terminal may have redrawn the screen)
-  printf '%s' "${ESC}[?25l"   # hide the cursor again (see cleanup)
+  printf '%s' "${CSI}?25l"   # hide the cursor again (see cleanup)
   o_rows=$rows o_cols=$cols
   if ! term_size; then
     rows=$o_rows cols=$o_cols   # carry on as we were
@@ -676,9 +678,9 @@ erode_ground() {
 # the top (from the saucer's lane up), green from the shields down.
 boom_color() {
   if [ $1 -le $saucer_row ]; then
-    bcol="${ESC}[31m"
+    bcol="${CSI}31m"
   elif [ $1 -ge $shield_top ]; then
-    bcol="${ESC}[32m"
+    bcol="${CSI}32m"
   else
     bcol=""
   fi
@@ -1424,7 +1426,7 @@ shield_piece() {
         *) g=$g_sh_full ;;
       esac ;;
   esac
-  piece="${ESC}[$1;$2H$g"
+  piece="${CSI}$1;$2H$g"
 }
 
 # Sets $g to draw an invader shot of type $2 at row $1. The shots animate
@@ -1525,32 +1527,32 @@ dirty_unless_in() {
 # they differ from the last text's ($cur_a). (Text with attributes of its
 # own sets them and puts them back to none itself.)
 emit() {
-  mv="${ESC}[$1;$2H"
+  mv="${CSI}$1;$2H"
   if [ $cur_r -gt 0 ]; then
     dr=$(($1 - cur_r)) dc=$(($2 - cur_c))
     case $dr in
       0) v="" ;;
       -1) v=$up_one ;;
-      1) v="${ESC}[B" ;;
-      -*) v="${ESC}[${dr#-}A" ;;
-      *) v="${ESC}[${dr}B" ;;
+      1) v="${CSI}B" ;;
+      -*) v="${CSI}${dr#-}A" ;;
+      *) v="${CSI}${dr}B" ;;
     esac
     case $dc in
       0) h="" ;;
       -1) h="$BS" ;;
-      1) h="${ESC}[C" ;;
-      -*) h="${ESC}[${dc#-}D" ;;
-      *) h="${ESC}[${dc}C" ;;
+      1) h="${CSI}C" ;;
+      -*) h="${CSI}${dc#-}D" ;;
+      *) h="${CSI}${dc}C" ;;
     esac
     [ ${#v} -lt $((${#mv} - ${#h})) ] && mv=$v$h
   fi
   if [ "${5-}" != "$cur_a" ]; then
     if [ -z "${5-}" ]; then
-      mv="$mv${ESC}[m"
+      mv="$mv${CSI}m"
     elif [ -z "$cur_a" ]; then
-      mv="$mv${ESC}[${5}m"
+      mv="$mv${CSI}${5}m"
     else
-      mv="$mv${ESC}[0;${5}m"
+      mv="$mv${CSI}0;${5}m"
     fi
     cur_a=${5-}
   fi
@@ -1565,7 +1567,7 @@ emit() {
 # Adds $1 to $out, after which where the cursor is isn't known. ($1 must
 # end with no attributes set.)
 emit_raw() {
-  [ -n "$cur_a" ] && out="$out${ESC}[m"
+  [ -n "$cur_a" ] && out="$out${CSI}m"
   out="$out$1"
   cur_r=0 cur_a=""
 }
@@ -1642,7 +1644,7 @@ flush_todo() {
 # $credit (see draw).
 send_frame() {
   if [ -n "$cur_a" ]; then
-    out="$out${ESC}[m" cur_a=""
+    out="$out${CSI}m" cur_a=""
   fi
   if [ -n "$out" ] || [ "$head" != "$sync_on" ]; then
     out="$head$out$sync_off"
@@ -1682,7 +1684,7 @@ draw() {
   if [ $too_small -eq 1 ]; then
     t="Window too small: ${cols}x${rows}, need at least $((field_w + 2))x24. Paused (q quits)."
     if [ "$t" != "$sent_small" ]; then
-      printf '%s' "$sync_on${ESC}[H${ESC}[2J$t$sync_off"
+      printf '%s' "$sync_on${CSI}H${CSI}2J$t$sync_off"
       sent_small=$t cur_r=0
     fi
     return
@@ -1692,9 +1694,9 @@ draw() {
     # With a line speed set, the scenery is left to send a part a frame
     # (below), so the game itself appears sooner
     if [ $baud -gt 0 ]; then
-      head="$sync_on${ESC}[H${ESC}[2J" scenery_todo=$scenery_parts
+      head="$sync_on${CSI}H${CSI}2J" scenery_todo=$scenery_parts
     else
-      head="$sync_on${ESC}[H${ESC}[2J$scenery" scenery_todo=""
+      head="$sync_on${CSI}H${CSI}2J$scenery" scenery_todo=""
     fi
     cleared=1 cur_r=0
     prev_items="" prev_pieces=""
@@ -1766,7 +1768,7 @@ draw() {
   if [ $mode = play ]; then
     n_txt=$lives
     if [ $boom -gt 0 ] || [ $bonus_flash -gt 0 ]; then
-      n_txt="${ESC}[7m$lives${ESC}[0m"
+      n_txt="${CSI}7m$lives${CSI}0m"
     fi
     spares="" w=${#lives}
     i=1
@@ -1845,18 +1847,18 @@ draw() {
   # more each side (kept inside the borders).
   if [ $saucer_x -ne 0 ]; then
     if [ $saucer_hit -eq 0 ]; then
-      put $saucer_row $saucer_x 4 "${ESC}[31;4m$g_saucer${ESC}[0m"
+      put $saucer_row $saucer_x 4 "${CSI}31;4m$g_saucer${CSI}0m"
     elif [ $saucer_hit -gt 72 ]; then
       el='-' er='-' tx=$((saucer_x - 1))
       if [ $tx -lt $left ]; then el=""; tx=$left; fi
       [ $((saucer_x + saucer_w)) -gt $right ] && er=""
       put $saucer_row $tx $((4 + ${#el} + ${#er})) \
-        "${ESC}[31m$el$g_boom_l**$g_boom_r$er${ESC}[0m"
+        "${CSI}31m$el$g_boom_l**$g_boom_r$er${CSI}0m"
     else
       txt=$saucer_pts
       tx=$saucer_x
       [ $((tx + ${#txt} - 1)) -gt $right ] && tx=$((right - ${#txt} + 1))
-      put $saucer_row $tx ${#txt} "${ESC}[31m$txt${ESC}[0m"
+      put $saucer_row $tx ${#txt} "${CSI}31m$txt${CSI}0m"
     fi
   fi
 
@@ -1881,7 +1883,7 @@ draw() {
       set -- $inv
       unset IFS
       eval "g=\$g_inv_$3"
-      inv_frame="$inv_frame${ESC}[$1;$2H$g"
+      inv_frame="$inv_frame${CSI}$1;$2H$g"
       inv_cov="$inv_cov $1;$2  $1;$(($2 + 1)) "
     done
     inv_touched=1
@@ -1892,7 +1894,7 @@ draw() {
       set -- ${ev#?}
       unset IFS
       eval "g=\$g_inv_$3"
-      piece="${ESC}[$1;$2H$g"
+      piece="${CSI}$1;$2H$g"
       cells=" $1;$2  $1;$(($2 + 1)) "
       case $ev in
         -*)
@@ -1941,11 +1943,11 @@ draw() {
     if [ $ic -lt $left ]; then el=""; ic=$left; w=$((w - 1)); fi
     if [ $((${inv_boom_at#*:} + 2)) -gt $right ]; then er=""; w=$((w - 1)); fi
     boom_color $ir
-    put $ir $ic $w "${bcol}${el}${em}${er}${ESC}[0m"
+    put $ir $ic $w "${bcol}${el}${em}${er}${CSI}0m"
   fi
   if [ $shot_boom -gt 0 ]; then
     boom_color ${shot_boom_at%:*}
-    put ${shot_boom_at%:*} ${shot_boom_at#*:} 1 "$bcol$g_shot_boom${ESC}[0m"
+    put ${shot_boom_at%:*} ${shot_boom_at#*:} 1 "$bcol$g_shot_boom${CSI}0m"
   fi
   for e in $bomb_booms; do
     IFS=:
@@ -1956,7 +1958,7 @@ draw() {
       put $1 $2 1 "$g"
     else
       boom_color $1
-      put $1 $2 1 "${bcol}*${ESC}[0m"
+      put $1 $2 1 "${bcol}*${CSI}0m"
     fi
   done
 
@@ -2038,8 +2040,7 @@ draw() {
     for piece in $inv_add; do
       case $inv_frame in
         *"$piece"*)
-          csi="${ESC}["
-          t=${piece#$csi}; zr=${t%%";"*}; t=${t#*";"}
+          t=${piece#"$CSI"}; zr=${t%%";"*}; t=${t#*";"}
           lay top $zr ${t%%H*} 2 "${t#*H}"
           inv_sent="$inv_sent $piece " ;;
       esac
@@ -2053,7 +2054,7 @@ draw() {
             pre=${invaders%%" $zr:$zc:"*}
             t=${invaders#"$pre $zr:$zc:"}
             eval "g=\$g_inv_${t%%:*}"
-            piece="${ESC}[$zr;${zc}H$g"
+            piece="${CSI}$zr;${zc}H$g"
             case $inv_sent in
               *" $piece "*) ;;
               *) lay top $zr $zc 2 "$g"; inv_sent="$inv_sent $piece " ;;
@@ -2182,7 +2183,7 @@ draw_title() {
     width=$((plain + 2 * (${#text} - plain) - 1))
     [ "$lc" = c ] && lc=$((mid_c - width / 2))
     case $icon in
-      S) put $lr $((lc - 6)) 4 "${ESC}[31;4m$g_saucer${ESC}[0m" ;;
+      S) put $lr $((lc - 6)) 4 "${CSI}31;4m$g_saucer${CSI}0m" ;;
       -) ;;
       *) eval "g=\$g_inv_$icon"; put $lr $((lc - 4)) 2 "$g" ;;
     esac
@@ -2536,7 +2537,7 @@ usage() {
 main() {
   ascii=0   # 1 to draw in ASCII (see set_glyphs)
   baud=0    # the line's speed, to keep within (see draw); 0 for no limit
-  up_one="${ESC}[A"   # how to move the cursor up a line (see emit)
+  up_one="${CSI}A"   # how to move the cursor up a line (see emit)
   while [ $# -gt 0 ]; do
     case $1 in
       -a) ascii=1 ;;
