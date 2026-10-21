@@ -752,7 +752,8 @@ spawn_wave() {
     c=0
     while [ $c -lt $inv_cols ]; do
       inv_place $r $c $rack_px $rack_y
-      invaders="$invaders $ir:$ic:$((r * 11 + c))"
+      inv_encode $r $c 0
+      invaders="$invaders $ir:$ic:$code"
       c=$((c + 1))
     done
     r=$((r + 1))
@@ -784,6 +785,12 @@ spawn_wave() {
 inv_place() {
   ic=$((left + ($3 + $2 * 16 + 4) / 4))
   ir=$(($4 - $1 * inv_spacing))
+}
+
+# Sets $code from rack row $1, column $2 and picture $3 (0 or 1). It is the
+# inverse of inv_decode: r * 11 + c, plus 55 for the second picture.
+inv_encode() {
+  code=$(($1 * 11 + $2 + $3 * 55))
 }
 
 # Sets $dr, $dc, $dk and $dkl from invader code $1 (see the invaders list):
@@ -1113,15 +1120,12 @@ move_invaders() {
   fi
   # Its picture toggles when the move takes it into another column, so each
   # invader animates as it visibly shifts, not when it drops a row.
-  n=$3
   if [ $ic -ne $2 ]; then
-    if [ $df -eq 1 ]; then
-      n=$((n - 55))
-    else
-      n=$((n + 55))
-    fi
+    inv_encode $dr $dc $((1 - df))
+  else
+    inv_encode $dr $dc $df
   fi
-  new="$ir:$ic:$n"
+  new="$ir:$ic:$code"
   [ "$new" = "$old" ] && return 1
   # (Cutting at the end first and the known start second is much quicker
   # than ${invaders#*" $old"}, which is slow in long strings)
