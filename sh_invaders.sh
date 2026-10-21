@@ -140,7 +140,8 @@ check_locale() {
 # and upper case for the other ($g_inv_o and $g_inv_O, and so on), which
 # toggle as the invader shifts a column (see move_invaders). Only the ASCII
 # invaders have different pictures: the emoji are each a single picture, in
-# both cases.
+# both cases. Shields have four levels of wear ($g_sh_full, $g_sh_hi,
+# $g_sh_mid and $g_sh_lo), plus their two corner pieces.
 set_glyphs() {
   if [ $ascii -eq 1 ]; then
     g_inv_o='{}' g_inv_O='}{'
@@ -149,7 +150,7 @@ set_glyphs() {
     g_ship='/^\' g_saucer=' oo ' g_shot='!' g_shot_boom='X'
     g_boom_l='>' g_boom_r='<'
     g_pl_foot='I' g_pl_mid='+' g_pl_top='T'
-    g_sh_full='#' g_sh_l='/' g_sh_r='\' g_sh_hit=':'
+    g_sh_full='#' g_sh_l='/' g_sh_r='\' g_sh_hi='+' g_sh_mid=':' g_sh_lo='.'
     g_gnd='-' g_gnd_l='.' g_gnd_r='.' g_gnd_gaps='.'
     g_side='|' g_pm='~'
   else
@@ -159,7 +160,7 @@ set_glyphs() {
     g_ship='╱▲╲' g_saucer=' ◜◝ ' g_shot='¡' g_shot_boom='Ж'
     g_boom_l='›' g_boom_r='‹'
     g_pl_foot='┴' g_pl_mid='┼' g_pl_top='┬'
-    g_sh_full='█' g_sh_l='▟' g_sh_r='▙' g_sh_hit='▒'
+    g_sh_full='█' g_sh_l='▟' g_sh_r='▙' g_sh_hi='▓' g_sh_mid='▒' g_sh_lo='░'
     g_gnd='─' g_gnd_l='╴' g_gnd_r='╶' g_gnd_gaps='╌'
     g_side='│' g_pm='±'
   fi
@@ -282,7 +283,9 @@ layout() {
   # left edges at x=34, 79, 124, 169. At this scale, 6 columns x 2 rows:
   #   ▟████▙
   #   ██  ██
-  # Cells are listed as "row:col:kind" (L/R = rounded top corners).
+  # Cells are listed as "row:col:kind" (L/R = rounded top corners). Damage
+  # is tracked in hundredths of the arcade's pixels; the whole shield holds
+  # the arcade's 294 (see damage_shield).
   y2row 48; shield_bot=$row
   shield_top=$((shield_bot - 1))
   shield_cells=""
@@ -509,8 +512,13 @@ handle_resize() {
   done
   for s in $shield_cells; do
     hps=${hps# }; hp=${hps%% *}; hps=${hps#"$hp"}
-    sr=${s%%:*}; t=${s#*:}; sc=${t%%:*}
-    eval "sh_${sr}_${sc}=$hp"
+    sr=${s%%:*}; t=${s#*:}; sc=${t%%:*}; sk=${t##*:}
+    cap=3200
+    case $sk in
+      L|R) cap=1900 ;;
+    esac
+    [ $hp -gt $cap ] && hp=$cap
+    eval "sh_${sr}_${sc}=$hp shc_${sr}_${sc}=$cap"
   done
 
   # Redraw everything that is normally cached
@@ -528,9 +536,9 @@ handle_resize() {
 #   bombs:    space-separated "row:col:type:steps:height" invader shots
 #             (height in arcade space), at most one of
 #             each type: r (aimed "rolling"), p ("plunger"), s ("squiggly")
-#   sh_ROW_COL: hit points left in each shield cell (2 full, 1 damaged,
-#             unset or 0 gone). POSIX sh has no arrays, hence one variable
-#             per cell, accessed with eval.
+#   sh_ROW_COL: damage left in each shield cell, in hundredths of the
+#             arcade's pixels (see damage_shield)
+#   shc_ROW_COL: the same cell's capacity
 #   gnd_I:    the ground line's lit pixels in the field's column I, a 4-bit
 #             mask (bit 0 the leftmost of the column's 4 arcade pixels)
 #   inv_boom, shot_boom: frames left of an invader's or the player's shot's
@@ -545,38 +553,104 @@ reset_shields() {
     IFS=:
     set -- $s
     unset IFS
-    eval "sh_$1_$2=2"
+    # The arcade's shield is 22x16 with 294 lit pixels. Ours is 10 cells of
+    # 4x8 pixels at 32 rows (320). The two rounded top corners carry 19
+    # pixel-equivalents and the other eight 32, totalling exactly 294. At
+    # other playfield heights this is approximate.
+    cap=3200
+    case $3 in
+      L|R) cap=1900 ;;
+    esac
+    eval "sh_$1_$2=$cap shc_$1_$2=$cap"
   done
   shields_dirty=1
   shields_whole=1    # send them all (see draw)
   shield_changed=""
 }
 
-# Damages the shield cell at row $1, column $2. Returns 1 if there is no
+# Damages the shield cell at row $1, column $2 as an arcade shot of type $3
+# does: p (the player's) or b (an invader's). Returns 1 if there is no
 # shield there.
-hit_shield() {
+#
+# The arcade removes a fixed starburst of pixels, not a random pattern, and
+# erases the shot that made it too: 8x8 and 38 pixels for the player's shot,
+# 6x8 and 26 for an invader's (1C91 and 1CDC; sprites are stored by column).
+# The player's explosion starts 3 pixels left of the shot and the invader's
+# 2, and both start 2 pixels down (see docs/shot-collisions). The player's
+# shot lies inside its explosion, so erasing it takes nothing more. The
+# invader's shot stands 2 pixels above its explosion, taking 3 to 6 more:
+# 30.41 pixels on average over the three shot types' four pictures, which
+# this treats as equally likely. Spread over the 4x8-pixel terminal cells
+# (at 32 rows), averaged over every sub-cell alignment, a hit takes this
+# many hundredths of a pixel (left, struck, right):
+#
+#   player:  484, 1554, 853 in its row; 143, 403, 265 in the row above;
+#            21, 46, 31 in the row below
+#   invader: 175, 1478, 534 in its row; 37, 525, 168 in the row above;
+#            12, 78, 34 in the row below
+#
+# The sums are 3800 and 3041 (38 and 30.41 pixels). Both explosions spread
+# into both neighbouring rows; the row above gets more, as the sprite
+# begins 2 pixels below the shot. Bits that fall outside a shield are
+# dropped (damage_cell has nothing to take them from), and the rounded top
+# corners, with fewer pixels to take, take correspondingly less.
+damage_shield() {
   if [ $1 -lt $shield_top ] || [ $1 -gt $shield_bot ]; then
     return 1
   fi
   eval "hp=\${sh_$1_$2:-0}"
   [ $hp -eq 0 ] && return 1
-  eval "sh_$1_$2=$((hp - 1))"
+  if [ "$3" = p ]; then
+    damage_cell $1 $2 1554
+    damage_cell $1 $(($2 - 1)) 484
+    damage_cell $1 $(($2 + 1)) 853
+    damage_cell $(($1 - 1)) $2 403
+    damage_cell $(($1 - 1)) $(($2 - 1)) 143
+    damage_cell $(($1 - 1)) $(($2 + 1)) 265
+    damage_cell $(($1 + 1)) $2 46
+    damage_cell $(($1 + 1)) $(($2 - 1)) 21
+    damage_cell $(($1 + 1)) $(($2 + 1)) 31
+  else
+    damage_cell $1 $2 1478
+    damage_cell $1 $(($2 - 1)) 175
+    damage_cell $1 $(($2 + 1)) 534
+    damage_cell $(($1 - 1)) $2 525
+    damage_cell $(($1 - 1)) $(($2 - 1)) 37
+    damage_cell $(($1 - 1)) $(($2 + 1)) 168
+    damage_cell $(($1 + 1)) $2 78
+    damage_cell $(($1 + 1)) $(($2 - 1)) 12
+    damage_cell $(($1 + 1)) $(($2 + 1)) 34
+  fi
+  return 0
+}
+
+# Takes $3 hundredths of a pixel off shield cell row $1, column $2, if there
+# is one, down to nothing. (A cell that isn't part of a shield has no
+# variable, so reads as 0.) The weights are those of a full 4x8-pixel cell.
+# The rounded top corners hold only 19 of its 32 pixels, so a hit must take
+# fewer: the damage is scaled by the cell's capacity.
+damage_cell() {
+  eval "hp=\${sh_$1_$2:-0}"
+  [ $hp -gt 0 ] || return
+  eval "cap=\${shc_$1_$2:-3200}"
+  hp=$((hp - $3 * cap / 3200))
+  [ $hp -lt 0 ] && hp=0
+  eval "sh_$1_$2=$hp"
   shields_dirty=1
   shield_changed="$shield_changed $1;$2"
-  return 0
 }
 
 # Shots that hit a shield damage it and blow up.
 check_shields() {
   for b in $bullets; do
-    hit_shield ${b%:*} ${b#*:} && shot_explodes ${b%:*} ${b#*:}
+    damage_shield ${b%:*} ${b#*:} p && shot_explodes ${b%:*} ${b#*:}
   done
   remaining=""
   for m in $bombs; do
     IFS=:
     set -- $m
     unset IFS
-    if hit_shield $1 $2; then
+    if damage_shield $1 $2 b; then
       bomb_explodes $1 $2 $3
       continue
     fi
@@ -597,9 +671,10 @@ check_shields() {
 #  - An invader shot that hits something stays where it hit until its next
 #    turn (0612), then explodes, and is gone three turns later (0644).
 #    Until then its type can't fire again.
-#  - One difference: a shot that hits a shield or the ground damages it at
-#    once. In the arcade the shot just lands on their pixels; it's erasing
-#    the explosion when it ends (0436, 0675) that clears them.
+#  - One difference: a shot that hits a shield damages it at once, in the
+#    arcade's starburst pattern (see damage_shield). In the arcade the shot
+#    just lands on their pixels; it's erasing the explosion when it ends
+#    (0436, 0675) that clears them.
 # ---------------------------------------------------------------------------
 
 # The player's shot blows up at row $1, column $2.
@@ -1456,20 +1531,29 @@ check_saucer() {
 # sent at all.
 # ---------------------------------------------------------------------------
 
-# Sets $piece to draw the shield cell at row $1, column $2 as it now is
-# (blank once shot away).
+# Sets $piece to draw the shield cell at row $1, column $2 as it now is:
+# its corner piece while whole, one of the four wear levels after that, and
+# blank once shot away.
 shield_piece() {
-  eval "hp=\${sh_$1_$2:-0}"
-  case $hp in
-    0) g=' ' ;;
-    1) g=$g_sh_hit ;;
-    *)
-      case " $shield_cells " in
-        *" $1:$2:L "*) g=$g_sh_l ;;
-        *" $1:$2:R "*) g=$g_sh_r ;;
-        *) g=$g_sh_full ;;
-      esac ;;
-  esac
+  eval "hp=\${sh_$1_$2:-0} cap=\${shc_$1_$2:-1}"
+  if [ $hp -le 0 ]; then
+    g=' '
+  elif [ $hp -ge $cap ]; then
+    case " $shield_cells " in
+      *" $1:$2:L "*) g=$g_sh_l ;;
+      *" $1:$2:R "*) g=$g_sh_r ;;
+      *) g=$g_sh_full ;;
+    esac
+  else
+    pct=$((hp * 100 / cap))
+    if [ $pct -gt 66 ]; then
+      g=$g_sh_hi
+    elif [ $pct -gt 33 ]; then
+      g=$g_sh_mid
+    else
+      g=$g_sh_lo
+    fi
+  fi
   piece="${CSI}$1;$2H$g"
 }
 

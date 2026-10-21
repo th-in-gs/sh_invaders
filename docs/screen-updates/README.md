@@ -102,9 +102,9 @@ only to a terminal that says it does them.
 **Layers** are the parts of the screen that change only now and then: the
 scores and wave, the ground line, the shields and the invader formation.
 Each knows cheaply what has changed in it, and sends just that: a score
-that has changed, a column of ground a shot has worn away, a shield cell
-that's hit, an invader that has moved (blanked where it was and drawn
-where it is). All of them are sent the same way, as items (a place, a
+that has changed, a column of ground a shot has worn away, the shield cells
+a hit has damaged, an invader that has moved (blanked where it was and
+drawn where it is). All of them are sent the same way, as items (a place, a
 width, colors, and the text), sorted and then sent as above.
 
 **Pieces** are the things that move: the cannon, the row of spare
@@ -142,8 +142,9 @@ strings. So everything above is kept in strings, in a few shapes:
   pattern match, of the whole line against the last frame's list.
 - **"Arrays" of numbers.** Where every cell needs its own number, each has
   its own variable, named after its place and read and written with
-  `eval`: a shield cell's remaining strength, or which of a ground
-  column's 4 pixels are left (and were, when it was last sent).
+  `eval`: a shield cell's remaining pixels (in hundredths of an arcade
+  pixel), or which of a ground column's 4 pixels are left (and were, when
+  it was last sent).
 
 Pattern matching (`case`) and cutting by pattern (`${var%...}`,
 `${var#...}`) are built into the shell, so none of this starts another
@@ -228,7 +229,7 @@ frames: see above).
 |---|---|---|
 | A frame with nothing changed | 0 | 0 |
 | The player's shot climbing a row | about 15 bytes | about 31 bytes |
-| The median frame sent in play | about 15 bytes | about 31 bytes |
+| The median frame sent in play | about 14 bytes | about 29 bytes |
 | On average in play | about 0.7 KB a second | about 1.2 KB a second |
 | A frame as the title types out | about 2 bytes | about 18 bytes |
 | A full redraw (in ASCII) | about 0.8 KB for the title, 1.2 KB for a new game | the same, plus 16 bytes |

@@ -221,6 +221,35 @@ pixels lower, running into the explosion. A surviving player shot carries
 on from just above the meeting. At terminal resolution, applying the
 outcome at the meeting looks the same.
 
+## Shields
+
+Shield damage has the same cell-level coarseness, with the same approach.
+
+The arcade erodes fixed starbursts, and erases the shot that made them.
+The player's explosion is an 8 × 8 mask of 38 pixels (`1C91`), an
+invader's a 6 × 8 mask of 26 (`1CDC`), drawn 3 px left and 2 px down for
+yours, 2 px left and 2 px down for theirs. Erasing the explosion is what
+cuts the shield (above). The shot itself is erased as well and cuts it
+too. Yours lies inside its own explosion, so adds nothing. An invader's
+shot stands 2 px above its explosion, adding 3 to 6 pixels. Averaged over
+the three shot types' four pictures, an invader's hit erases 30.4 pixels.
+
+"#!/bin/sh Invaders" stores each 4 × 8-pixel shield cell's damage in
+hundredths of an arcade pixel, and spreads a hit over the struck cell and
+its neighbours by the mask's overlap, averaged over every sub-cell
+alignment. The whole shield starts with the arcade's 294 lit pixels. At 32
+rows a cell is 4 × 8, so the averages are exact. The two rounded top
+corners hold only 19 of a cell's 32 pixels, so a hit there takes less, in
+proportion. At other playfield heights rows are taller, and the
+calibration is approximate. The game
+treats the three invader shot types and their pictures as equally likely;
+their averages are 29.75, 30.5 and 31.0 pixels.
+
+What it can't show is where inside a cell a shot passes. A cell with any
+damage left always blocks, where in the arcade a 1-pixel shot can thread a
+gap. Hole shapes and the exact frame a breach opens differ. Hits to clear a
+shield match in expectation.
+
 ## Not modeled
 
 All of these are rare:
