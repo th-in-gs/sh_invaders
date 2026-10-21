@@ -135,13 +135,14 @@ check_locale() {
 }
 
 # Sets the characters things are drawn with: emoji and Unicode symbols, or
-# ASCII if $ascii is 1. Each takes the same number of columns in both. The
-# invaders' kinds are o, c and s (see inv_decode), lower case for one picture
-# and upper case for the other ($g_inv_o and $g_inv_O, and so on), which
-# toggle as the invader shifts a column (see move_invaders). Only the ASCII
-# invaders have different pictures: the emoji are each a single picture, in
-# both cases. Shields have four levels of wear ($g_sh_full, $g_sh_hi,
-# $g_sh_mid and $g_sh_lo), plus their two corner pieces.
+# ASCII if $ascii is 1. Each character takes the same number of columns in
+# both sets. The invaders' kinds are o, c and s (see inv_decode), lower case
+# for one picture and upper case for the other ($g_inv_o and $g_inv_O, and
+# so on), which toggle as the invader shifts a column (see move_invaders).
+# Only the ASCII invaders have different pictures: each emoji is a single
+# picture, drawn for both cases. Shields show four levels of damage
+# ($g_sh_full, $g_sh_hi, $g_sh_mid and $g_sh_lo), plus their two corner
+# pieces.
 set_glyphs() {
   if [ $ascii -eq 1 ]; then
     g_inv_o='{}' g_inv_O='}{'
@@ -285,7 +286,7 @@ layout() {
   #   ██  ██
   # Cells are listed as "row:col:kind" (L/R = rounded top corners). Damage
   # is tracked in hundredths of the arcade's pixels; the whole shield holds
-  # the arcade's 294 (see damage_shield).
+  # the arcade's 294 (see reset_shields).
   y2row 48; shield_bot=$row
   shield_top=$((shield_bot - 1))
   shield_cells=""
@@ -554,9 +555,10 @@ reset_shields() {
     set -- $s
     unset IFS
     # The arcade's shield is 22x16 with 294 lit pixels. Ours is 10 cells of
-    # 4x8 pixels at 32 rows (320). The two rounded top corners carry 19
-    # pixel-equivalents and the other eight 32, totalling exactly 294. At
-    # other playfield heights this is approximate.
+    # 4x8 pixels at 32 rows: 320 pixels if none were rounded. The two
+    # rounded top corners carry 19 pixel-equivalents and the other eight 32,
+    # totalling exactly 294. At other playfield heights this is
+    # approximate.
     cap=3200
     case $3 in
       L|R) cap=1900 ;;
@@ -1401,7 +1403,11 @@ check_bombs() {
     fi
     # Shots that have passed each other may still be level for a frame
     eval "pv=\$passed_$mt"
-    [ "$pv" = $shots ] && bullets_here="" || bullets_here=$bullets
+    if [ "$pv" = $shots ]; then
+      bullets_here=""
+    else
+      bullets_here=$bullets
+    fi
     met=0
     for b in $bullets_here; do
       # The shots move toward each other, so they can pass between frames
@@ -1532,8 +1538,8 @@ check_saucer() {
 # ---------------------------------------------------------------------------
 
 # Sets $piece to draw the shield cell at row $1, column $2 as it now is:
-# its corner piece while whole, one of the four wear levels after that, and
-# blank once shot away.
+# its corner piece while whole, one of the other three levels after that,
+# and blank once shot away.
 shield_piece() {
   eval "hp=\${sh_$1_$2:-0} cap=\${shc_$1_$2:-1}"
   if [ $hp -le 0 ]; then
