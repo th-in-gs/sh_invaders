@@ -136,11 +136,16 @@ check_locale() {
 
 # Sets the characters things are drawn with: emoji and Unicode symbols, or
 # ASCII if $ascii is 1. Each takes the same number of columns in both. The
-# invaders' types are kept as letters (o, c and s: see spawn_wave), drawn
-# with $g_inv_o, $g_inv_c and $g_inv_s.
+# invaders' types are kept as letters (o, c and s: see spawn_wave), lower
+# case for one picture and upper case for the other ($g_inv_o and $g_inv_O,
+# and so on), which toggle as the invader shifts a column (see
+# move_invaders). Only the ASCII invaders have different pictures: the emoji
+# are each a single picture, in both cases.
 set_glyphs() {
   if [ $ascii -eq 1 ]; then
-    g_inv_o='{}' g_inv_c='<>' g_inv_s='/\'
+    g_inv_o='{}' g_inv_O='[]'
+    g_inv_c='<>' g_inv_C='><'
+    g_inv_s='/\' g_inv_S='\/'
     g_ship='/^\' g_saucer=' oo ' g_shot='!' g_shot_boom='X'
     g_boom_l='>' g_boom_r='<'
     g_pl_foot='I' g_pl_mid='+' g_pl_top='T'
@@ -148,7 +153,9 @@ set_glyphs() {
     g_gnd='-' g_gnd_l='.' g_gnd_r='.' g_gnd_gaps='.'
     g_side='|' g_pm='~'
   else
-    g_inv_o='🐙' g_inv_c='🦀' g_inv_s='👾'
+    g_inv_o='🐙' g_inv_O='🐙'
+    g_inv_c='🦀' g_inv_C='🦀'
+    g_inv_s='👾' g_inv_S='👾'
     g_ship='╱▲╲' g_saucer=' ◜◝ ' g_shot='¡' g_shot_boom='Ж'
     g_boom_l='›' g_boom_r='‹'
     g_pl_foot='┴' g_pl_mid='┼' g_pl_top='┬'
@@ -512,9 +519,9 @@ handle_resize() {
 # ---------------------------------------------------------------------------
 # Game state
 #   invaders: space-separated "row:col:kind:r:c" (kind o, c or s, for octopus,
-#             crab or squid; r, c their place in the rack, 0,0 the bottom
-#             left), in the order the arcade moves them: from the bottom
-#             left, along each row and up
+#             crab or squid, upper case for its other picture; r, c their
+#             place in the rack, 0,0 the bottom left), in the order the
+#             arcade moves them: from the bottom left, along each row and up
 #   bullets:  the player's shot, "row:col" (at most one, as in the arcade);
 #             its height in arcade space is in $bullet_y
 #   bombs:    space-separated "row:col:type:steps:height" invader shots
@@ -709,8 +716,8 @@ col_fire_table() {
 # Points by invader type, as in the arcade (top row 30, middle 20, bottom 10)
 points() {
   case $1 in
-    s) pts=30 ;;
-    c) pts=20 ;;
+    s|S) pts=30 ;;
+    c|C) pts=20 ;;
     *) pts=10 ;;
   esac
 }
@@ -1072,8 +1079,8 @@ move_invaders() {
   # sprites are different widths in their 16-pixel slots (1C00-1C2F).
   x=$((rack_px + $5 * 16))
   case $3 in   # its leftmost and rightmost pixels in the slot
-    o) px_l=2 px_r=13 ;;
-    c) px_l=3 px_r=13 ;;
+    o|O) px_l=2 px_r=13 ;;
+    c|C) px_l=3 px_r=13 ;;
     *) px_l=4 px_r=11 ;;
   esac
   if [ $inv_dx -gt 0 ] && [ $((x + px_r)) -ge 213 ]; then
@@ -1082,7 +1089,18 @@ move_invaders() {
     inv_dx=2 inv_drop=1
     [ $inv_count -eq 1 ] && inv_dx=3
   fi
-  new="$ir:$ic:$3:$4:$5"
+  # Its picture toggles when the move takes it into another column, so each
+  # invader animates as it visibly shifts, not when it drops a row. (The
+  # case of its kind is its picture: see set_glyphs.)
+  k=$3
+  if [ $ic -ne $2 ]; then
+    case $3 in
+      o) k=O ;; O) k=o ;;
+      c) k=C ;; C) k=c ;;
+      *) k=S ;; S) k=s ;;
+    esac
+  fi
+  new="$ir:$ic:$k:$4:$5"
   [ "$new" = "$old" ] && return 1
   # (Cutting at the end first and the known start second is much quicker
   # than ${invaders#*" $old"}, which is slow in long strings)

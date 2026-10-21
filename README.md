@@ -142,8 +142,9 @@ As in the arcade:
 
 ### The main differences
 
-- Invaders are emoji (or pairs of ASCII characters), so they don’t
-  switch between two pictures as they move.
+- Invaders are emoji (or pairs of ASCII characters). The emoji have one
+  picture each, so unlike the arcade they don’t switch between two as they
+  move; the ASCII invaders do, each switching as it shifts column.
 - Positions are only as fine as a terminal cell. Where the arcade’s
   outcome depends on pixels the game doesn’t have (shots meeting, which
   parts of the ground erode), it’s chosen with the arcade’s frequencies.
