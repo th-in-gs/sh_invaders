@@ -143,7 +143,7 @@ check_locale() {
 # both cases.
 set_glyphs() {
   if [ $ascii -eq 1 ]; then
-    g_inv_o='{}' g_inv_O='[]'
+    g_inv_o='{}' g_inv_O='}{'
     g_inv_c='<>' g_inv_C='><'
     g_inv_s='/\' g_inv_S='\/'
     g_ship='/^\' g_saucer=' oo ' g_shot='!' g_shot_boom='X'
