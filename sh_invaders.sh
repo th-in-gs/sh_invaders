@@ -367,6 +367,7 @@ init_game() {
   new_game     # sets up a game (so the score line has something to show) ...
   mode=title   # ... but start on the title screen, like the arcade
   title_t=0
+  title_done=0   # 1 once the title screen has typed out (see draw_title)
 
   frame=0           # counts every frame from startup (see meet_outcome)
 
@@ -1072,7 +1073,9 @@ read_input() {
     case $key in
       q|Q) quit=1 ;;
       r|R) restart=1 ;;
-      f|F) dbg=$((1 - dbg)) ;;   # the frame-rate display (see draw)
+      # The frame-rate display (see draw). The HUD it changes is drawn even
+      # while the title screen is idle, so make sure it's drawn afresh once.
+      f|F) dbg=$((1 - dbg)) title_done=0 ;;
       t|T) switch_glyphs ;;
       h|H|a|A) move=-1 ;;
       l|L|d|D) move=1 ;;
@@ -1823,6 +1826,13 @@ draw() {
     fi
     return
   fi
+  # The title screen, once typed out, changes nothing and sends nothing.
+  # Skip drawing it until something can: T and a resize rebuild the scenery
+  # and force a full redraw, F clears title_done, and R starts a game.
+  if [ $mode = title ] && [ $title_done -eq 1 ] && [ $dbg -eq 0 ] &&
+     [ $redraw_all -eq 0 ] && [ $bell -eq 0 ] && [ -z "$scenery_todo" ]; then
+    return
+  fi
   inv_touched=0 cleared=0
   if [ $redraw_all -eq 1 ]; then
     # With a line speed set, the scenery is left to send a part a frame
@@ -1835,7 +1845,7 @@ draw() {
     cleared=1 cur_r=0
     prev_items="" prev_pieces=""
     # Nothing has been sent onto the cleared screen yet
-    sent_hud="" sent_ground="" sent_shields=""
+    sent_hud="" sent_hud_key="" sent_ground="" sent_shields=""
     inv_touched=1
     redraw_all=0
   else
@@ -1844,56 +1854,63 @@ draw() {
   out="" todo="" todo_last=0 grows="" pieces="" items="" cov="" lay_cov=""
   [ $bell -eq 1 ] && { head="$head$BEL"; bell=0; }
 
-  # Score values under their headings, zero-padded like the arcade's
-  # (The scores, and the timing below, are items: see todo_add)
-  pad4 $score
-  hud="$((hud_row + 1));$sc_x;4; $p4$NL"
-  pad4 $hi
-  hud="$hud$((hud_row + 1));$((hi_x + 2));4; $p4$NL"
-  # Right-justified under WAVE, mirroring the score under SCORE
-  hud="$hud$((hud_row + 1));$((wv_x + 4 - ${#wave}));${#wave}; $wave$NL"
-  # With F, timing in the window's top-left corner (6 columns are free
-  # there at any width). On the first row, how it's pacing (see pace): "f"
-  # (fine) and the sleep in ms, or "c", "t" or "b" (cal, tick or busy) and
-  # the busy-wait's count; the letter is in upper case if frames are
-  # wrapped in synchronized output. On the second, the last measured frame
-  # rate and how much the last 8 vary (see fps_stats). Turned off, the same
-  # cells are sent as blanks.
-  if [ $dbg -eq 1 ]; then
-    case $pace_mode in
-      fine) t="f $((delay_us / 1000))ms" ;;
-      cal) t="c$spin" ;;
-      tick) t="t$spin" ;;
-      busy) t="b$spin" ;;
-    esac
-    if [ -n "$sync_on" ]; then
-      case $t in
-        f*) t="F${t#?}" ;;
-        c*) t="C${t#?}" ;;
-        t*) t="T${t#?}" ;;
-        *) t="B${t#?}" ;;
+  # The values below the headings change only when one of these does, so the
+  # strings are rebuilt (and compared with what was sent) only then.
+  hud_key="$score:$hi:$wave:$dbg:${dbg_fps-}:${dbg_sd-}"
+  hud_key="$hud_key:${pace_mode-}:${spin-}:${delay_us-}:$sync_on"
+  if [ "$hud_key" != "${sent_hud_key-}" ]; then
+    sent_hud_key=$hud_key
+    # Score values under their headings, zero-padded like the arcade's
+    # (The scores, and the timing below, are items: see todo_add)
+    pad4 $score
+    hud="$((hud_row + 1));$sc_x;4; $p4$NL"
+    pad4 $hi
+    hud="$hud$((hud_row + 1));$((hi_x + 2));4; $p4$NL"
+    # Right-justified under WAVE, mirroring the score under SCORE
+    hud="$hud$((hud_row + 1));$((wv_x + 4 - ${#wave}));${#wave}; $wave$NL"
+    # With F, timing in the window's top-left corner (6 columns are free
+    # there at any width). On the first row, how it's pacing (see pace): "f"
+    # (fine) and the sleep in ms, or "c", "t" or "b" (cal, tick or busy) and
+    # the busy-wait's count; the letter is in upper case if frames are
+    # wrapped in synchronized output. On the second, the last measured frame
+    # rate and how much the last 8 vary (see fps_stats). Turned off, the same
+    # cells are sent as blanks.
+    if [ $dbg -eq 1 ]; then
+      case $pace_mode in
+        fine) t="f $((delay_us / 1000))ms" ;;
+        cal) t="c$spin" ;;
+        tick) t="t$spin" ;;
+        busy) t="b$spin" ;;
       esac
+      if [ -n "$sync_on" ]; then
+        case $t in
+          f*) t="F${t#?}" ;;
+          c*) t="C${t#?}" ;;
+          t*) t="T${t#?}" ;;
+          *) t="B${t#?}" ;;
+        esac
+      fi
+      while [ ${#t} -lt 6 ]; do t="$t "; done
+      if [ -n "$dbg_fps" ]; then d="$dbg_fps$g_pm$dbg_sd"; else d="--    "; fi
+      hud="${hud}1;1;6; $t${NL}2;1;6; $d$NL"
+    else
+      hud="${hud}1;1;6;       ${NL}2;1;6;       $NL"
     fi
-    while [ ${#t} -lt 6 ]; do t="$t "; done
-    if [ -n "$dbg_fps" ]; then d="$dbg_fps$g_pm$dbg_sd"; else d="--    "; fi
-    hud="${hud}1;1;6; $t${NL}2;1;6; $d$NL"
-  else
-    hud="${hud}1;1;6;       ${NL}2;1;6;       $NL"
-  fi
-  # Only the fields that have changed are sent
-  if [ "$hud" != "$sent_hud" ]; then
-    IFS=$NL
-    for p in $hud; do
+    # Only the fields that have changed are sent
+    if [ "$hud" != "$sent_hud" ]; then
+      IFS=$NL
+      for p in $hud; do
+        unset IFS
+        case "$NL$sent_hud" in
+          *"$NL$p$NL"*) ;;
+          *)
+            fr=${p%%";"*}; t=${p#*";"}; fc=${t%%";"*}; t=${t#*";"}
+            todo_add $fr $fc ${t%%";"*} "${p#* }" ;;
+        esac
+      done
       unset IFS
-      case "$NL$sent_hud" in
-        *"$NL$p$NL"*) ;;
-        *)
-          fr=${p%%";"*}; t=${p#*";"}; fc=${t%%";"*}; t=${t#*";"}
-          todo_add $fr $fc ${t%%";"*} "${p#* }" ;;
-      esac
-    done
-    unset IFS
-    sent_hud=$hud
+      sent_hud=$hud
+    fi
   fi
 
   # Below the ground, as in the arcade: the number of cannons (including
@@ -2310,6 +2327,7 @@ draw_title() {
   # unspaced one every frame), so the text grows across the screen at a
   # steady pace, as in the arcade where all letters are the same width.
   left_cols=$title_t
+  title_done=0 shown=0
   for line in "$@"; do
     [ $left_cols -le 0 ] && break
     # ("|" is quoted: Korn shells read a bare | in a pattern as "or")
@@ -2334,7 +2352,11 @@ draw_title() {
     arcade_text "$text" $n $plain
     put_grow $lr $lc ${#sp} "$sp"
     left_cols=$((left_cols - plain - 2 * (${#text} - plain)))
+    shown=$((shown + 1))
   done
+  # Once every line has all its columns, nothing on the title screen will
+  # change (see the skip in draw).
+  [ $shown -eq $# ] && [ $left_cols -ge 0 ] && title_done=1
 
   arcade_text "PRESS R TO PLAY, Q TO QUIT" 99
   put $((r0 + 16)) $((mid_c - 25)) ${#sp} "$sp"
