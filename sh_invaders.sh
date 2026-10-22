@@ -897,6 +897,14 @@ inv_decode() {
 
 # Starts a new game (at launch, and on 'r' after game over).
 new_game() {
+  # Starting from the title screen with the scenery under way: keep it (and
+  # send any parts still queued), and erase the title's text, rather than
+  # clearing the screen and sending the scenery again (slow at low baud
+  # rates). The title text can be part-typed; only what was drawn is erased.
+  soft_start=0
+  if [ "${mode-}" = title ] && [ $redraw_all -eq 0 ]; then
+    soft_start=1
+  fi
   mode=play
   redraw_all=1
   score=0
@@ -1835,24 +1843,46 @@ draw() {
   fi
   inv_touched=0 cleared=0
   if [ $redraw_all -eq 1 ]; then
+    if [ $soft_start -eq 1 ]; then
+      head=$sync_on
     # With a line speed set, the scenery is left to send a part a frame
     # (below), so the game itself appears sooner
-    if [ $baud -gt 0 ]; then
+    elif [ $baud -gt 0 ]; then
       head="$sync_on${CSI}H${CSI}2J" scenery_todo=$scenery_parts
     else
       head="$sync_on${CSI}H${CSI}2J$scenery" scenery_todo=""
     fi
-    cleared=1 cur_r=0
-    prev_items="" prev_pieces=""
-    # Nothing has been sent onto the cleared screen yet
-    sent_hud="" sent_hud_key="" sent_ground="" sent_shields=""
-    inv_touched=1
-    redraw_all=0
+    if [ $soft_start -ne 1 ]; then
+      cleared=1 cur_r=0
+      prev_items="" prev_pieces=""
+      # Nothing has been sent onto the cleared screen yet
+      sent_hud="" sent_hud_key="" sent_ground="" sent_shields=""
+      inv_touched=1
+      redraw_all=0
+    fi
   else
     head=$sync_on
   fi
   out="" todo="" todo_last=0 grows="" pieces="" items="" cov="" lay_cov=""
   gone_dirty=""
+  if [ $soft_start -eq 1 ]; then
+    soft_start=0
+    # Erase the title's lines where they were drawn
+    IFS=$NL
+    for p in $prev_pieces; do
+      k=${p%% *}
+      fr=${k%%";"*}; t=${k#*";"}; fc=${t%%";"*}; fw=${t#*";"}
+      z="" w=$fw
+      while [ $w -gt 0 ]; do z="$z "; w=$((w - 1)); done
+      top_add $fr $fc $fw "$z"
+    done
+    unset IFS
+    prev_items="" prev_pieces=""
+    # The title screen drew the whole ground line already
+    sent_ground=play ground_dirty=0
+    inv_touched=1
+    redraw_all=0
+  fi
   [ $bell -eq 1 ] && { head="$head$BEL"; bell=0; }
 
   # The values below the headings change only when one of these does, so the
@@ -1941,7 +1971,7 @@ draw() {
   elif [ $ground_dirty -eq 1 ] || [ "$sent_ground" != play ]; then
     i=0
     while [ $i -lt $field_w ]; do
-      eval "m=\$gnd_$i n=\${sent_gnd_$i-}"
+      eval "m=\$gnd_$i n=\${sent_gnd_$i-15}"
       if [ "$sent_ground" != play ] || [ "$m" != "$n" ]; then
         ground_glyph $i
         todo_add $ground_row $((left + i)) 1 "$g" 32
