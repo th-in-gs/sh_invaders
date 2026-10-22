@@ -1852,6 +1852,7 @@ draw() {
     head=$sync_on
   fi
   out="" todo="" todo_last=0 grows="" pieces="" items="" cov="" lay_cov=""
+  gone_dirty=""
   [ $bell -eq 1 ] && { head="$head$BEL"; bell=0; }
 
   # The values below the headings change only when one of these does, so the
@@ -2111,11 +2112,13 @@ draw() {
   # moving thing was over an invader or a shield, that invader or shield
   # cell is redrawn instead. (Blanks are never where a layer is drawn, so
   # they can go before or after the layers.)
-  inv_redo="" shield_redo=""
+  inv_redo="" shield_redo="" gone_dirty=""
   for k in $prev_items; do
     case "$items " in *" $k "*) continue ;; esac
     zr=${k%%";"*}; t=${k#*";"}; zc=${t%";"*}; zw=${t#*";"}
     while [ $zw -gt 0 ]; do
+      # (for changed_pieces: things on these cells are drawn again)
+      gone_dirty="$gone_dirty $zr;$zc "
       case $cov in
         *" $zr;$zc "*) ;;
         *)
@@ -2220,11 +2223,10 @@ changed_pieces() {
   if [ $inv_touched -eq 1 ]; then
     dirty=all
   else
-    # The cells drawn by the layers, and those of things new, changed or
-    # gone
-    dirty=$lay_cov
+    # The cells drawn by the layers, those of things new or changed, and
+    # those things gone left (see the blanking above)
+    dirty=$lay_cov$gone_dirty
     dirty_unless_in "$pieces" "$prev_pieces"
-    dirty_unless_in "$prev_pieces" "$pieces"
   fi
   IFS=$NL
   for p in $pieces; do
