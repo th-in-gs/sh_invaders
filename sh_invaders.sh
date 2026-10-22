@@ -2332,6 +2332,16 @@ draw_title() {
       -) ;;
       *) eval "g=\$g_inv_$icon"; put $lr $((lc - 4)) 2 "$g" ;;
     esac
+    # A line typed out in an earlier frame is sent again as it was then
+    if [ $left_cols -gt $((width + 1)) ]; then
+      eval "sp=\${tc_$shown-}"
+      if [ -n "$sp" ]; then
+        put_grow $lr $lc ${#sp} "$sp"
+        left_cols=$((left_cols - width - 1))
+        shown=$((shown + 1))
+        continue
+      fi
+    fi
     # Letters shown so far: unspaced ones take 1 column, spaced ones 2
     if [ $left_cols -le $plain ]; then
       n=$left_cols
@@ -2339,6 +2349,7 @@ draw_title() {
       n=$((plain + (left_cols - plain + 1) / 2))
     fi
     arcade_text "$text" $n $plain
+    [ $n -ge ${#text} ] && eval "tc_$shown=\$sp"
     put_grow $lr $lc ${#sp} "$sp"
     left_cols=$((left_cols - plain - 2 * (${#text} - plain)))
     shown=$((shown + 1))
