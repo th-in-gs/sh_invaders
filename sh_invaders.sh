@@ -2020,22 +2020,19 @@ draw() {
     game_over_text
   fi
 
-  # The formation: $inv_frame draws it all and $inv_cov lists its cells.
-  # Usually just one invader has moved (or one has gone) since the last
-  # frame, so only those changes are drawn: each moved or gone invader's
-  # piece is taken out, and each moved one's added and drawn. The cells
-  # they leave are blanked below. A new wave or layout rebuilds it all.
+  # The formation: $inv_cov lists the cells it covers. Usually just one
+  # invader has moved (or one has gone) since the last frame, so only those
+  # changes are drawn: each moved one is added to draw, and the cells moved
+  # or gone invaders leave are blanked below. A new wave or layout rebuilds
+  # it all.
   inv_add="" gone_cov=""
   if [ $inv_rebuild -eq 1 ]; then
     gone_cov=${inv_cov-}
-    inv_frame="" inv_cov=""
+    inv_cov=""
     for inv in $invaders; do
       IFS=:
       set -- $inv
       unset IFS
-      inv_decode $3
-      eval "g=\$g_inv_$dkl"
-      inv_frame="$inv_frame${CSI}$1;$2H$g"
       inv_cov="$inv_cov $1;$2  $1;$(($2 + 1)) "
     done
     inv_touched=1
@@ -2045,25 +2042,18 @@ draw() {
       IFS=:
       set -- ${ev#?}
       unset IFS
-      inv_decode $3
-      eval "g=\$g_inv_$dkl"
-      piece="${CSI}$1;$2H$g"
       cells=" $1;$2  $1;$(($2 + 1)) "
       case $ev in
         -*)
-          case $inv_frame in
-            *"$piece"*)
-              # (see move_invaders for why it's cut this way)
-              pre=${inv_frame%%"$piece"*}
-              inv_frame="$pre${inv_frame#"$pre$piece"}"
-              pre=${inv_cov%%"$cells"*}
-              inv_cov="$pre${inv_cov#"$pre$cells"}"
-              gone_cov="$gone_cov$cells" ;;
-          esac ;;
+          # (see move_invaders for why it's cut this way)
+          pre=${inv_cov%%"$cells"*}
+          inv_cov="$pre${inv_cov#"$pre$cells"}"
+          gone_cov="$gone_cov$cells" ;;
         *)
-          inv_frame="$inv_frame$piece"
+          inv_decode $3
+          eval "g=\$g_inv_$dkl"
           inv_cov="$inv_cov$cells"
-          inv_add="$inv_add $piece" ;;
+          inv_add="$inv_add ${CSI}$1;$2H$g" ;;
       esac
     done
   fi
@@ -2192,12 +2182,9 @@ draw() {
   else
     inv_sent=""
     for piece in $inv_add; do
-      case $inv_frame in
-        *"$piece"*)
-          t=${piece#"$CSI"}; zr=${t%%";"*}; t=${t#*";"}
-          lay top $zr ${t%%H*} 2 "${t#*H}"
-          inv_sent="$inv_sent $piece " ;;
-      esac
+      t=${piece#"$CSI"}; zr=${t%%";"*}; t=${t#*";"}
+      lay top $zr ${t%%H*} 2 "${t#*H}"
+      inv_sent="$inv_sent $piece "
     done
     for z in $inv_redo; do
       zr=${z%";"*} zc=${z#*";"}

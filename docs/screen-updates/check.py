@@ -62,6 +62,7 @@ oracle_items() {   # adds a list of items (row;col;width;attr text) to $o
   unset IFS
 }
 oracle_log() {
+  kind=$1   # (the loops below use set --, so keep the frame's kind)
   o="${ESC}[0m${ESC}[H${ESC}[2J$scenery${ESC}[0m"
   oracle_items "$hud"
   o="$o${ESC}[32m${ESC}[$ground_row;${left}H"
@@ -79,7 +80,15 @@ oracle_log() {
       shield_piece $qr ${t%%:*}
       o="$o$piece"
     done
-    o="$o${ESC}[0m$inv_frame"
+    o="$o${ESC}[0m"
+    for inv in $invaders; do
+      IFS=:
+      set -- $inv
+      unset IFS
+      inv_decode $3
+      eval "g=\$g_inv_$dkl"
+      o="$o${CSI}$1;$2H$g"
+    done
   fi
   IFS=$NL
   for p in $pieces; do
@@ -89,7 +98,7 @@ oracle_log() {
     o="$o${ESC}[$r;${c}H${p#* }"
   done
   unset IFS
-  k=$1
+  k=$kind
   [ -n "${scenery_todo-}" ] && [ "$k" = S ] && k=P
   printf '%s\036%s\036%s\036\037' "$k" "$o" "${out_now-}" >&3
   out_now=""
