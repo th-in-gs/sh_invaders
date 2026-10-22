@@ -847,7 +847,7 @@ spawn_wave() {
   reset_ground
   bullets=""
   bombs=""
-  inv_boom=0 shot_boom=0 bomb_booms=""
+  inv_boom=0 shot_boom=0 bomb_booms="" boom_overlap=""
   wave_wait=0   # frames since the last invader was hit (see main)
   bomb_tick=0   # which invader shot type's turn it is (see move_bombs)
   turn=r
@@ -957,7 +957,7 @@ player_hit() {
   boom=60        # the arcade's 12 explosion pictures, 5 frames each
   bullets=""
   bombs=""
-  inv_boom=0 shot_boom=0 bomb_booms=""
+  inv_boom=0 shot_boom=0 bomb_booms="" boom_overlap=""
   fire_delay=48  # as at the start, the invaders hold fire for a while
   [ $lives -le 0 ] && end_game
 }
@@ -2110,6 +2110,11 @@ draw() {
   # and 6 (invaders'): each is a single cell here, told apart by its glyph.
   # An invader shot shows as itself until its next turn (see
   # bomb_explodes).
+  # An invader shot's explosion can share a cell with the player's, drawn
+  # over it. While it does, or on the frame after it goes, the cell is
+  # marked: the other explosion may still be there, so the blanking below
+  # doesn't mark it. (See changed_pieces.)
+  boom_dirty=$boom_overlap boom_overlap=""
   if [ $inv_boom -gt 0 ]; then
     ir=${inv_boom_at%:*}; ic=$((${inv_boom_at#*:} - 1))
     # Widths by hand: in dash, ${#} counts bytes, and › and ‹ are 3
@@ -2127,6 +2132,11 @@ draw() {
     IFS=:
     set -- $e
     unset IFS
+    if [ $shot_boom -gt 0 ]; then
+      if [ "$shot_boom_at" = "$1:$2" ]; then
+        boom_overlap="$boom_overlap $1;$2 "
+      fi
+    fi
     if [ $4 -eq 4 ]; then
       bomb_glyph $1 $3
       put $1 $2 1 "$g"
@@ -2142,7 +2152,7 @@ draw() {
   # moving thing was over an invader or a shield, that invader or shield
   # cell is redrawn instead. (Blanks are never where a layer is drawn, so
   # they can go before or after the layers.)
-  inv_redo="" shield_redo="" gone_dirty=""
+  inv_redo="" shield_redo="" gone_dirty="$boom_dirty"
   for k in $prev_items; do
     case "$items " in *" $k "*) continue ;; esac
     zr=${k%%";"*}; t=${k#*";"}; zc=${t%";"*}; zw=${t#*";"}
