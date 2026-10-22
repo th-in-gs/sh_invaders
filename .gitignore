@@ -21,6 +21,9 @@
 .fuse_hidden*
 .nfs*
 
+# Python
+__pycache__/
+
 # Editors
 *.swp
 *.swo
