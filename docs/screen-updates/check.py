@@ -138,7 +138,7 @@ def scripted(src, args):
   return 0
 }}
 '''
-    i = src.rindex('\nmain "$@"')
+    i = src.rindex('\nmain ${1+"$@"}')
     return src[:i] + code + src[i:]
 
 
@@ -156,7 +156,7 @@ def instrument(src):
     src = src.replace(SKIP, SKIP.replace(
         "      return\n",
         "      out_now=''; printf 'K\\036\\036\\036\\037' >&3\n      return\n"))
-    i = src.rindex('\nmain "$@"')
+    i = src.rindex('\nmain ${1+"$@"}')
     return src[:i] + ORACLE + src[i:]
 
 

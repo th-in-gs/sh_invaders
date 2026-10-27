@@ -2832,4 +2832,6 @@ main() {
   exit 0   # the EXIT trap restores the terminal
 }
 
-main "$@"
+# ${1+"$@"}, not "$@": posh 0.14.1 errors on "$@" with no arguments under
+# set -u, though POSIX says it expands to nothing. Arguments still pass.
+main ${1+"$@"}
