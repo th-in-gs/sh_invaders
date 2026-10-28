@@ -351,8 +351,13 @@ build_scenery() {
   t="$t${CSI}$hud_row;${wv_x}HWAVE"
   scenery="$scenery$t" scenery_parts="$t$NL$scenery_parts"
   # The row below the ground shows the cannons left (see draw); the
-  # controls go below that
-  help="MOVE: H/L OR ARROWS   FIRE: SPACE   QUIT: Q"
+  # controls go below that. T names the mode it switches to, so the line
+  # changes when it does (build_scenery runs again, see switch_glyphs).
+  if [ $ascii -eq 1 ]; then
+    help="MOVE: H/L OR ARROWS   FIRE: SPACE   T: EMOJI   QUIT: Q"
+  else
+    help="MOVE: H/L OR ARROWS   FIRE: SPACE   T: ASCII   QUIT: Q"
+  fi
   t="${CSI}$((ground_row + 2));$((left + (field_w - ${#help}) / 2))H$help"
   scenery="$scenery$t" scenery_parts="${scenery_parts%%"$NL"*}$NL$t$NL${scenery_parts#*"$NL"}"
 }
@@ -1035,7 +1040,8 @@ save_hiscore() {
 
 # Sets $move (-1, 0, 1), $fire (0/1), $restart (0/1) and $quit from all
 # keys pressed since the previous frame. Toggles $dbg on F, and switches
-# between emoji and ASCII on T.
+# between emoji and ASCII on T. Space fires, and also starts a game from
+# the title screen (as R does).
 read_input() {
   move=0
   fire=0
@@ -1087,7 +1093,10 @@ read_input() {
       t|T) switch_glyphs ;;
       h|H|a|A) move=-1 ;;
       l|L|d|D) move=1 ;;
-      ' ') fire=1 ;;
+      ' ') fire=1
+           # Fire is often held, and its key repeats must not restart the
+           # game at the moment the player dies. R still does.
+           [ "$mode" = title ] && restart=1 ;;
     esac
   done
 }
