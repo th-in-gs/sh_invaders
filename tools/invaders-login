@@ -1,0 +1,67 @@
+#!/bin/sh
+# Login shell for the public game accounts: runs the game under ksh.
+# The account name picks the options: ascii draws plain ASCII, 9600
+# paces for a 9,600-baud line (which also draws ASCII).
+account=$(/usr/bin/id -un)
+case $account in
+  ascii) set -- -a ;;
+  9600) set -- -b 9600 ;;
+  *) set -- ;;
+esac
+# sshd passes TERM and a few locale variables. Pin the locale: ksh93
+# drops an invalid one, and the game then waits at its warning.
+PATH=/usr/bin:/bin
+LANG=en_US.UTF-8
+LC_ALL=en_US.UTF-8
+export PATH LANG LC_ALL
+
+# Session log for capacity planning, kept in the journal under the
+# sh-invaders tag. One session is one SSH connection. No address, no
+# keystrokes. See journalctl -t sh-invaders.
+session=$$
+log_event() {
+  /usr/bin/logger -t sh-invaders -- "$*" 2>/dev/null || :
+}
+
+if size=$(/usr/bin/stty size 2>/dev/null); then
+  rows=${size%% *}
+  cols=${size##* }
+else
+  rows=0
+  cols=0
+fi
+log_event "START sid=$session start=$(/usr/bin/date +%s) account=$account cols=$cols rows=$rows"
+
+child=
+log_end() {
+  status=$?
+  [ -n "${watchdog-}" ] && kill "$watchdog" 2>/dev/null
+  log_event "END sid=$session end=$(/usr/bin/date +%s) status=$status"
+}
+trap log_end EXIT
+trap 'kill -TERM "$child" 2>/dev/null; exit 129' HUP
+trap 'kill -TERM "$child" 2>/dev/null; exit 130' INT
+trap 'kill -TERM "$child" 2>/dev/null; exit 143' TERM
+
+# If sshd closes the pty and exits, this shell is reparented and would
+# otherwise keep the game running forever. End the session instead.
+parent=$PPID
+(
+  exec </dev/null >/dev/null 2>&1
+  while kill -0 "$parent" 2>/dev/null && kill -0 "$session" 2>/dev/null; do
+    /usr/bin/sleep 2
+  done
+  if kill -0 "$session" 2>/dev/null && ! kill -0 "$parent" 2>/dev/null; then
+    kill -TERM "$session" 2>/dev/null
+  fi
+) &
+watchdog=$!
+
+if [ -t 0 ]; then
+  /usr/bin/ksh /usr/local/games/sh_invaders.sh "$@" </dev/tty >&1 2>&2 &
+  child=$!
+  wait "$child"
+else
+  # No terminal: let the game print its own message and exit.
+  /usr/bin/ksh /usr/local/games/sh_invaders.sh "$@"
+fi
