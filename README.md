@@ -20,7 +20,7 @@ updating the screen less often when there's a lot to send. It draws in
 ASCII then, which takes fewer bytes.
 
 Tested in `sh`, `dash`, `bash` (including the bash 3.2 that comes with
-macOS) and Korn shells (including OpenBSD’s `sh`). In `zsh`, use
+macOS) and Korn (ksh) shells (including OpenBSD’s `sh`). In `zsh`, use
 `zsh --emulate sh sh_invaders.sh`.
 
 BusyBox’s `sh` has a `read` that waits for a newline even with `min 0 time
@@ -73,7 +73,9 @@ The high score is kept in `~/.sh_invaders_hiscore`.
 ## POSIX, huh?
 
 Aside from a POSIX-compliant `/bin/sh`, this script also needs `stty`,
-`sleep` and `date`.
+`sleep` and `date`. If you want to run this script with MAXIMUM 
+PERFORMANCE, `ksh` is the shell that does it best, because it has 
+`sleep` as a builtin.
 
 These commands are used as POSIX defines them, with (sadly) *one
 exception*: it *needs* `sleep` to accept fractions of a second
