@@ -6,12 +6,9 @@ allows.
 
 ![#!/bin/sh Invaders running in macOS Terminal: rows of emoji invaders above four green shields and the cannon](mac_screenshot.png)
 
-## Launching
+## Play online
 
-`sh sh_invaders.sh` - or just `./sh_invaders.sh` if you’ve gone wild and
-marked it as executable.
-
-Or play it on the public server, in a terminal:
+Play it on the public server, in a Terminal:
 
     ssh play@invaders.now
 
@@ -22,16 +19,22 @@ and nothing else.
 And if you like to live very dangerously, you can run it straight off the
 web without cloning anything:
 
-    sh -c "$(curl -fsSL https://invaders.now)"
+    sh -c "$(curl -fsSL https://invaders.now)" sh_invaders.sh
 
 Not `curl … | sh`: the game reads the keyboard from standard input, and a
-pipe would take that away[^command_line].
+pipe would take that away[^command_line]. The trailing `sh_invaders.sh` is
+the name the script sees in `$0`, so its messages point at the right thing.
 
 [^command_line]: On an old computer that guarantees only POSIX's minimum
     4 KB command line, the script - about 100 KB - doesn't fit in one
     argument. Save it first instead:
 
         curl -fsSL https://invaders.now -o sh_invaders.sh && sh sh_invaders.sh
+
+## Launching
+
+`sh sh_invaders.sh` - or just `./sh_invaders.sh` if you’ve gone wild and
+marked it as executable.
 
 To make it output pure ASCII, without any of that modern nonsense like
 emoji or Unicode symbols, add `-a` (or press `T` while playing).
