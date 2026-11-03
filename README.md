@@ -11,6 +11,28 @@ allows.
 `sh sh_invaders.sh` - or just `./sh_invaders.sh` if you’ve gone wild and
 marked it as executable.
 
+Or play it on the public server, in a terminal:
+
+    ssh play@invaders.now
+
+`ascii@invaders.now` draws in plain ASCII, and `9600@invaders.now` plays as
+if down a 9,600-baud line. No password: the accounts exist to run the game
+and nothing else.
+
+And if you like to live very dangerously, you can run it straight off the
+web without cloning anything:
+
+    sh -c "$(curl -fsSL https://invaders.now)"
+
+Not `curl … | sh`: the game reads the keyboard from standard input, and a
+pipe would take that away[^command_line].
+
+[^command_line]: On an old computer that guarantees only POSIX's minimum
+    4 KB command line, the script - about 100 KB - doesn't fit in one
+    argument. Save it first instead:
+
+        curl -fsSL https://invaders.now -o sh_invaders.sh && sh sh_invaders.sh
+
 To make it output pure ASCII, without any of that modern nonsense like
 emoji or Unicode symbols, add `-a` (or press `T` while playing).
 
