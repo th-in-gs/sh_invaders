@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>#!/bin/sh Invaders</title>
+<meta name="description" content="Space Invaders in a terminal, written in pure POSIX shell.">
+<style>
+  /* Colours from the blog (Archie theme + montgomerie_archie.css). */
+  :root {
+    --bg: whitesmoke;
+    --text: black;
+    --muted: #737373;
+    --rule: #ececec;
+    --code-bg: #ececec;
+    --code-text: inherit;
+    --accent: red;
+    --hover-bg: navy;
+    --hover-text: #fff;
+    --frame: #737373;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #202124;
+      --text: white;
+      --muted: #999;
+      --rule: #333;
+      --code-bg: #272822;
+      --code-text: whitesmoke;
+      --hover-bg: #50fa7b;
+      --hover-text: black;
+      --frame: #999;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    min-height: 100vh;
+    min-height: 100dvh;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    place-items: center;
+    padding: 16px;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.5 monospace;
+  }
+  main {
+    width: 100%;
+    max-width: 40rem;
+    min-width: 0;
+    padding: 2rem;
+    border: 1px solid var(--frame);
+  }
+  /* Half a point where the screen can show it. */
+  @media (min-resolution: 2dppx) {
+    main { border-width: 0.5px; }
+  }
+  .invaders {
+    margin-bottom: 1.25rem;
+    text-align: center;
+    font-size: 1.5rem;
+    line-height: 1.4;
+    letter-spacing: 0.15em;
+    user-select: none;
+  }
+  h1 { margin: 0 0 1.5rem; font-size: 1.5rem; text-align: center; }
+  /* Headings as on the blog: a red Markdown-style marker */
+  h2 { margin: 1.75rem 0 0.75rem; font-size: 1rem; font-weight: 600; }
+  h2::before { content: "## "; color: var(--accent); }
+  pre {
+    margin: 0;
+    padding: 0.4rem 0.6rem;
+    background: var(--code-bg);
+    color: var(--code-text);
+    overflow-x: auto;
+  }
+  code { font: inherit; }
+  pre + pre, pre + .note { margin-top: 0.75rem; }
+  .note { margin: 0 0 0.15rem; font-size: 0.85rem; color: var(--muted); }
+  nav { margin-top: 1.75rem; padding-top: 1rem; border-top: 4px dotted var(--accent); }
+  nav a {
+    color: inherit;
+    text-decoration-color: var(--accent);
+    text-decoration-thickness: 0.1em;
+    text-underline-offset: 0.075em;
+  }
+  nav a:hover { background: var(--hover-bg); color: var(--hover-text); }
+  nav a + a { margin-left: 1.5rem; }
+</style>
+</head>
+<body>
+<main>
+  <div class="invaders" aria-hidden="true">🐙 🐙 🐙 🐙 🐙<br>🦀 🦀 🦀 🦀 🦀<br>👾 👾 👾 👾 👾</div>
+  <h1>#!/bin/sh Invaders</h1>
+
+  <h2>Play over SSH</h2>
+  <pre><code>ssh play@invaders.now</code></pre>
+  <p class="note">Good old ASCII. The invaders animate!</p>
+  <pre><code>ssh ascii@invaders.now</code></pre>
+  <p class="note">Limit to 9600-baud for anachronistic authenticity!</p>
+  <pre><code>ssh 9600@invaders.now</code></pre>
+
+  <h2>Live Dangerously!</h2>
+  <pre><code>sh -c "$(curl -fsSL https://invaders.now)" sh_invaders.sh</code></pre>
+
+  <nav>
+    <a href="https://github.com/th-in-gs/sh_invaders">GitHub</a>
+    <a href="https://www.blog.montgomerie.net/posts/2026-11-03-sh-invaders/">Blog post</a>
+  </nav>
+</main>
+</body>
+</html>

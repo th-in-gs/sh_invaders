@@ -1,0 +1,14 @@
+[Unit]
+Description=Download for #!/bin/sh Invaders (handshakes only)
+
+[Socket]
+ListenStream=80
+# Loopback only: stunnel terminates TLS here and passes the plain
+# request on, so both front doors share one sandboxed handler.
+ListenStream=127.0.0.1:8080
+Accept=yes
+# A download is one small file; a few dozen at once is plenty.
+MaxConnections=64
+
+[Install]
+WantedBy=sockets.target

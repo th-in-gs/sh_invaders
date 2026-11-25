@@ -1,0 +1,45 @@
+[Unit]
+Description=BusyBox httpd serving invaders.now (connection %i)
+
+[Service]
+# One process per connection, from the socket above. Inetd mode: the
+# request arrives on stdin, the response leaves on stdout. It runs one
+# program, cgi-bin/index.cgi for /, which sends the game or the page.
+ExecStart=/usr/bin/busybox httpd -i -h /srv/www -c /etc/busybox-httpd.conf
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+
+# Nothing here needs privilege: systemd binds port 80, not the server.
+# DynamicUser: a fresh UID per connection, not the shared `nobody`.
+DynamicUser=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+UMask=0077
+
+# Confine the process. It reads world-readable files and writes to a
+# socket; everything else is denied.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# No network access of its own, in or out; the socket comes from systemd.
+IPAddressDeny=any

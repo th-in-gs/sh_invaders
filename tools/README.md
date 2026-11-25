@@ -17,7 +17,6 @@ Nothing needs installing into the game's own directory.
 | `bench-constructs.py` | Times shell constructs for storing a list |
 | `test-shields.sh` | Checks shield capacity and the damage each hit does |
 | `test-title-f.py` | Checks that F redraws the HUD on the idle title screen |
-| `invaders-login` | Login shell for the public game accounts; logs each session |
 | `session-report.py` | Reports session counts, durations and peak concurrency |
 
 ## CPU use
@@ -95,9 +94,10 @@ pyte mishandles the emoji.
 
 ## Sessions
 
-`invaders-login` is the login shell on the public game server. It runs the
-game under ksh and writes a START and END record to the journal for each
-session. `session-report.py` reads them:
+`server/invaders-login` is the login shell on the public game server. It
+runs the game under ksh and writes a START and END record to the journal
+for each session, or a BUSY record for a login turned away while the
+server is busy. `session-report.py` reads them:
 
 ```
 tools/session-report.py --days 7
@@ -107,4 +107,4 @@ tools/session-report.py --json
 
 `--input FILE` reads captured journal JSON, so the report can be tested
 without a server. See `docs/server-sessions.md` for the record format,
-privacy, deployment and the abandoned-session watchdog.
+privacy, the busy check and the abandoned-session watchdog.

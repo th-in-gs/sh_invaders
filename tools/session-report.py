@@ -7,6 +7,10 @@ tagged `sh-invaders`:
     START sid=1234 start=1761696000 account=game cols=80 rows=24
     END   sid=1234 end=1761696252 status=0
 
+A login turned away because the server was busy writes one instead:
+
+    BUSY  sid=1240 time=1761696300 account=play cpu=94
+
 A session is one SSH connection. The accounts are shared, so this
 counts sessions, not people. No addresses are logged.
 """
@@ -92,6 +96,7 @@ def event_lines(args, since):
 def read_sessions(lines):
     sessions = {}
     orphans = 0
+    busy = []
     for line in lines:
         line = line.strip()
         if not line:
@@ -106,7 +111,7 @@ def read_sessions(lines):
         if not isinstance(message, str):
             continue
         words = message.split()
-        if not words or words[0] not in ('START', 'END'):
+        if not words or words[0] not in ('START', 'END', 'BUSY'):
             continue
         fields = {}
         for word in words[1:]:
@@ -117,7 +122,11 @@ def read_sessions(lines):
         if not sid:
             continue
         key = (entry.get('_BOOT_ID', ''), sid)
-        if words[0] == 'START':
+        if words[0] == 'BUSY':
+            when = as_int(fields.get('time'))
+            if when is not None:
+                busy.append(when)
+        elif words[0] == 'START':
             start = as_int(fields.get('start'))
             if start is None:
                 continue
@@ -130,7 +139,7 @@ def read_sessions(lines):
             sessions[key].status = as_int(fields.get('status'))
         else:
             orphans += 1
-    return list(sessions.values()), orphans
+    return list(sessions.values()), orphans, busy
 
 
 def peak_concurrency(sessions):
@@ -177,7 +186,7 @@ def format_time(moment):
         '%Y-%m-%d %H:%M UTC')
 
 
-def summarize(sessions, since, until, excluded, orphans):
+def summarize(sessions, since, until, excluded, orphans, busy):
     finished = [s for s in sessions if s.end is not None]
     durations = [s.duration for s in finished]
     peak, peak_at = peak_concurrency(finished)
@@ -206,6 +215,7 @@ def summarize(sessions, since, until, excluded, orphans):
             'unfinished': len(sessions) - len(finished),
             'excluded_short': excluded,
             'orphan_ends': orphans,
+            'turned_away_busy': busy,
         },
         'duration_seconds': {
             'total': sum(durations),
@@ -238,6 +248,8 @@ def print_summary(summary, per_day):
               % counts['excluded_short'])
     if counts['orphan_ends']:
         print('END without START: %d' % counts['orphan_ends'])
+    if counts['turned_away_busy']:
+        print('Turned away, server busy: %d' % counts['turned_away_busy'])
     print('Total play time: %s' % format_duration(length['total']))
     print('Median session: %s' % format_duration(length['median']))
     print('Mean session: %s' % format_duration(length['mean']))
@@ -323,9 +335,10 @@ def main():
     if since >= until:
         raise SystemExit('session-report.py: empty window')
 
-    sessions, orphans = read_sessions(event_lines(args, since))
+    sessions, orphans, busy = read_sessions(event_lines(args, since))
     since_epoch = since.timestamp()
     until_epoch = until.timestamp()
+    busy = sum(1 for when in busy if since_epoch <= when < until_epoch)
     sessions = [s for s in sessions
                 if since_epoch <= s.start < until_epoch]
     excluded = 0
@@ -345,7 +358,7 @@ def main():
     if args.csv:
         write_csv(sessions)
         return
-    summary = summarize(sessions, since, until, excluded, orphans)
+    summary = summarize(sessions, since, until, excluded, orphans, busy)
     if args.json:
         print(json.dumps(summary, indent=2))
         return

@@ -1,0 +1,39 @@
+[Unit]
+Description=TLS front end for the #!/bin/sh Invaders download
+After=network-online.target invaders-web.socket
+Wants=network-online.target
+Requires=invaders-web.socket
+
+[Service]
+ExecStart=/usr/bin/stunnel4 /etc/stunnel/invaders.conf
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2
+
+# stunnel reads the private key as root, then drops to the stunnel4
+# user before the first handshake (setuid/setgid in its config).
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+# The privilege drop itself is two syscalls outside @system-service.
+SystemCallFilter=setuid setgid setgroups
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

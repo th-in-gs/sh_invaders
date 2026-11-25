@@ -9,10 +9,12 @@ case $account in
   *) set -- ;;
 esac
 # sshd passes TERM and a few locale variables. Pin the locale: ksh93
-# drops an invalid one, and the game then waits at its warning.
+# drops one that isn't installed, and the game then waits at its warning.
+# C.UTF-8 is built into glibc, so it is always there; en_US.UTF-8 is only
+# there if generated.
 PATH=/usr/bin:/bin
-LANG=en_US.UTF-8
-LC_ALL=en_US.UTF-8
+LANG=C.UTF-8
+LC_ALL=C.UTF-8
 export PATH LANG LC_ALL
 
 # Session log for capacity planning, kept in the journal under the
@@ -22,6 +24,32 @@ session=$$
 log_event() {
   /usr/bin/logger -t sh-invaders -- "$*" 2>/dev/null || :
 }
+
+# Turn new players away while the server is busy, so the games already
+# running stay smooth. There is no fixed limit on sessions: CPU use is
+# measured over one second from /proc/stat (busy is everything but idle
+# and iowait), and a session starts unless it is at busy_limit or more.
+busy_limit=90
+cpu_sample() {
+  read -r _ user nice system idle iowait irq softirq steal _ </proc/stat
+  total=$((user + nice + system + idle + iowait + irq + softirq + steal))
+  idle=$((idle + iowait))
+}
+cpu=0
+if [ -r /proc/stat ]; then
+  cpu_sample
+  total0=$total idle0=$idle
+  /usr/bin/sleep 1
+  cpu_sample
+  if [ $((total - total0)) -gt 0 ]; then
+    cpu=$((100 * (total - total0 - (idle - idle0)) / (total - total0)))
+  fi
+fi
+if [ $cpu -ge $busy_limit ]; then
+  log_event "BUSY sid=$session time=$(/usr/bin/date +%s) account=$account cpu=$cpu"
+  echo "The server is busy right now - please try again in a minute."
+  exit 0
+fi
 
 if size=$(/usr/bin/stty size 2>/dev/null); then
   rows=${size%% *}
