@@ -2409,6 +2409,9 @@ draw_title() {
 
   arcade_text "PRESS R TO PLAY, Q TO QUIT" 99
   put $((r0 + 16)) $((mid_c - 25)) ${#sp} "$sp"
+  # The game's address, under the ground where the cannons are counted in
+  # play. Unspaced, so terminals can recognize it as a link.
+  put $((ground_row + 1)) $((mid_c - 10)) 21 "HTTPS://INVADERS.NOW/"
 }
 
 # ---------------------------------------------------------------------------
