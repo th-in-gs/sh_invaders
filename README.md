@@ -6,6 +6,8 @@ allows.
 
 ![#!/bin/sh Invaders running in macOS Terminal: rows of emoji invaders above four green shields and the cannon](mac_screenshot.png)
 
+Read more [about it on my blog](https://www.blog.montgomerie.net/posts/2026-11-03-sh-invaders/).
+
 ## Play online
 
 Play it on the public server, in a Terminal:
